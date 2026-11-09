@@ -134,6 +134,7 @@ func Run(ctx context.Context, table []Command, args []string, stdout, stderr io.
 		return usageError(stderr, "%v", err)
 	}
 	jsonMode := !stdoutIsTerminal
+	explicitJSON := false
 	i := 0
 	for ; i < len(args); i++ {
 		a := args[i]
@@ -145,10 +146,10 @@ func Run(ctx context.Context, table []Command, args []string, stdout, stderr io.
 			fmt.Fprintln(stdout, version.Version)
 			return ExitOK
 		case "--help", "-h":
-			writeHelp(stdout, table)
+			writeHelpFor(stdout, table, explicitJSON)
 			return ExitOK
 		case "--json", "--json=true":
-			jsonMode = true
+			jsonMode, explicitJSON = true, true
 		case "--json=false":
 			jsonMode = false
 		default:
@@ -156,12 +157,17 @@ func Run(ctx context.Context, table []Command, args []string, stdout, stderr io.
 		}
 	}
 	if i >= len(args) {
-		writeHelp(stdout, table)
+		writeHelpFor(stdout, table, explicitJSON)
 		return ExitOK
 	}
 	name, rest := args[i], args[i+1:]
 	if name == "help" {
-		writeHelp(stdout, table)
+		for _, a := range rest {
+			if a == "--json" || a == "--json=true" {
+				explicitJSON = true
+			}
+		}
+		writeHelpFor(stdout, table, explicitJSON)
 		return ExitOK
 	}
 	var cmd *Command
@@ -229,6 +235,16 @@ func Run(ctx context.Context, table []Command, args []string, stdout, stderr io.
 	}
 	env := &Env{Stdout: stdout, Stderr: stderr, JSON: jsonMode, Flags: flags, Lists: lists}
 	return cmd.Run(ctx, env, positional)
+}
+
+// writeHelpFor writes the tree as JSON when --json was given, else text. Help
+// stays text when merely piped, because a person pipes it to less.
+func writeHelpFor(w io.Writer, table []Command, asJSON bool) {
+	if asJSON {
+		writeHelpJSON(w, table)
+		return
+	}
+	writeHelp(w, table)
 }
 
 func writeHelp(w io.Writer, table []Command) {

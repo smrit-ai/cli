@@ -1,0 +1,118 @@
+{
+  "program": "smrit",
+  "version": "0.0.0",
+  "global_flags": [
+    {
+      "name": "json",
+      "usage": "Write JSON. This is the default when output is not a terminal.",
+      "default": "false",
+      "bool": true,
+      "repeatable": false
+    },
+    {
+      "name": "version",
+      "usage": "Print the version.",
+      "default": "false",
+      "bool": true,
+      "repeatable": false
+    }
+  ],
+  "commands": [
+    {
+      "name": "call",
+      "summary": "Call any Smrit tool: smrit call <tool> [--arg name=value] [--json-args '{...}'].",
+      "flags": [
+        {
+          "name": "org",
+          "usage": "The organization to use, when signed in to several.",
+          "default": "",
+          "bool": false,
+          "repeatable": false
+        },
+        {
+          "name": "arg",
+          "usage": "A tool argument as name=value. Repeat it. JSON values are sent as JSON.",
+          "default": "",
+          "bool": false,
+          "repeatable": true
+        },
+        {
+          "name": "json-args",
+          "usage": "The tool arguments as one JSON object; each --arg overrides it.",
+          "default": "",
+          "bool": false,
+          "repeatable": false
+        }
+      ]
+    },
+    {
+      "name": "login",
+      "summary": "Sign in through your browser.",
+      "flags": [
+        {
+          "name": "org",
+          "usage": "The organization to use, when signed in to several.",
+          "default": "",
+          "bool": false,
+          "repeatable": false
+        }
+      ]
+    },
+    {
+      "name": "logout",
+      "summary": "Sign out and forget the sign in on this machine.",
+      "flags": [
+        {
+          "name": "org",
+          "usage": "The organization to use, when signed in to several.",
+          "default": "",
+          "bool": false,
+          "repeatable": false
+        }
+      ]
+    },
+    {
+      "name": "status",
+      "summary": "Show who you are signed in as and what you can see.",
+      "flags": [
+        {
+          "name": "org",
+          "usage": "The organization to use, when signed in to several.",
+          "default": "",
+          "bool": false,
+          "repeatable": false
+        }
+      ]
+    }
+  ],
+  "exit_codes": [
+    {
+      "code": 0,
+      "meaning": "The command did what was asked."
+    },
+    {
+      "code": 1,
+      "meaning": "The command ran but some items failed or were skipped."
+    },
+    {
+      "code": 2,
+      "meaning": "The command line was wrong: an unknown command or flag, or a missing argument."
+    },
+    {
+      "code": 3,
+      "meaning": "There is no usable sign in; run smrit login."
+    },
+    {
+      "code": 4,
+      "meaning": "The server refused the request, for example because of permissions or limits."
+    },
+    {
+      "code": 5,
+      "meaning": "The server could not be reached or failed; try again later."
+    },
+    {
+      "code": 6,
+      "meaning": "This version of smrit is too old for the server; install a newer release."
+    }
+  ]
+}
