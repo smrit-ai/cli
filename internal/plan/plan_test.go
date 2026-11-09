@@ -244,3 +244,44 @@ func TestWorkbookTitleClashesRefused(t *testing.T) {
 		}
 	}
 }
+
+// Smrit folds an accented letter to its base letter before it derives a
+// slug, which a stdlib CLI cannot do exactly, so a title outside ASCII is
+// never refused here: Smrit's own duplicate refusal settles it.
+func TestWorkbookTitleClashOnlyForASCIITitles(t *testing.T) {
+	res := scan.Result{Files: []scan.File{
+		file("a.csv", "workbook"), file("b.csv", "workbook"), file("c.csv", "workbook"),
+		file("d.csv", "workbook"), file("caf.md", "document"), file("e.csv", "workbook"),
+	}}
+	wb := func(p, title string) PlanEntry {
+		return PlanEntry{Path: p, Kind: "workbook", Space: "engineering", Title: title}
+	}
+	p := Plan{Root: "/r", Entries: []PlanEntry{
+		wb("a.csv", "Café"), wb("b.csv", "Caf"),
+		wb("c.csv", "Cafe"), wb("d.csv", "cafe"),
+		{Path: "caf.md", Kind: "document", Space: "engineering", Type: "t"},
+		wb("e.csv", "Cafè"),
+	}}
+	ok, bad := Validate(context.Background(), p, res, spaces, true)
+	refused := map[string]bool{}
+	for _, r := range bad {
+		refused[r.Path] = true
+	}
+	// Caf is the document caf.md's slug, so b.csv clashes with it, not with Café.
+	if len(bad) != 3 || !refused["b.csv"] || !refused["c.csv"] || !refused["d.csv"] {
+		t.Fatalf("%+v", bad)
+	}
+	var kept []string
+	for _, e := range ok {
+		kept = append(kept, e.Path)
+	}
+	if strings.Join(kept, ",") != "a.csv,caf.md,e.csv" {
+		t.Fatalf("kept %v", kept)
+	}
+
+	// Without the document, Café and Caf both pass.
+	p.Entries = []PlanEntry{wb("a.csv", "Café"), wb("b.csv", "Caf")}
+	if _, bad := Validate(context.Background(), p, res, spaces, true); len(bad) != 0 {
+		t.Fatalf("%+v", bad)
+	}
+}

@@ -182,7 +182,10 @@ const maxBaseSlug = 193
 // would refuse as a duplicate: its base slug, derived from its title as
 // Smrit derives it, is another workbook's or a plan document's in the same
 // space (content/services.py, _refuse_duplicate). Titles alone, or the same
-// title in two spaces, are no clash.
+// title in two spaces, are no clash. Only an ASCII title is compared, the
+// one case where TitleSlug is Smrit's slug exactly: a title outside ASCII
+// is left to Smrit, whose duplicate refusal reports the workbook exists and
+// writes nothing for it. A document's slug is ASCII by the plan's own rule.
 func refuseTitleClashes(ok []Entry, bad []Refusal) ([]Entry, []Refusal) {
 	type key struct{ space, slug string }
 	books := map[key]int{}
@@ -190,7 +193,9 @@ func refuseTitleClashes(ok []Entry, bad []Refusal) ([]Entry, []Refusal) {
 	for _, e := range ok {
 		switch e.Kind {
 		case scan.KindWorkbook:
-			books[key{e.Space, TitleSlug(e.Title)}]++
+			if isASCII(e.Title) {
+				books[key{e.Space, TitleSlug(e.Title)}]++
+			}
 		case scan.KindDocument:
 			docs[key{e.Space, baseSlug(e.Slug)}] = true
 		}
@@ -199,7 +204,7 @@ func refuseTitleClashes(ok []Entry, bad []Refusal) ([]Entry, []Refusal) {
 	clashed := false
 	for _, e := range ok {
 		reason := ""
-		if e.Kind == scan.KindWorkbook {
+		if e.Kind == scan.KindWorkbook && isASCII(e.Title) {
 			switch k := (key{e.Space, TitleSlug(e.Title)}); {
 			case docs[k]:
 				reason = "A document in the plan has the name Smrit would store this workbook's document under in this space."
@@ -220,12 +225,22 @@ func refuseTitleClashes(ok []Entry, bad []Refusal) ([]Entry, []Refusal) {
 	return kept, bad
 }
 
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
 // TitleSlug is the slug Smrit derives from a title when it is given none,
 // as Django's slugify does for ASCII: letters, digits, underscores and
 // hyphens kept and lowercased, each run of spaces and hyphens one hyphen,
-// hyphens and underscores trimmed from the ends, cut to 193. Other
-// characters are dropped, where Smrit first folds an accented letter to its
-// base letter, so a title outside ASCII may compare differently.
+// hyphens and underscores trimmed from the ends, cut to 193. It is exact
+// only for an ASCII title: Smrit first folds an accented letter to its base
+// letter (NFKD), which this drops instead, so it is never used to refuse a
+// title outside ASCII.
 func TitleSlug(title string) string {
 	var b strings.Builder
 	gap := false
