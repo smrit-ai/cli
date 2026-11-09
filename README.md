@@ -43,7 +43,7 @@ This needs Go 1.25 or newer. A one line installer and prebuilt binaries are comi
 - Write to a public space.
 - Delete a README, a licence, an agent instruction file, or a file a build or a docs site uses.
 - Delete anything that is not safely in Smrit, in the zip, or in git.
-- Talk to any server but Smrit. Its addresses are built in.
+- Talk to any server but Smrit's own, and GitHub for `smrit upgrade` alone. Every address is built in; the hosts are listed under Security.
 
 ## Sign in and credentials
 
@@ -62,6 +62,16 @@ This needs Go 1.25 or newer. A one line installer and prebuilt binaries are comi
 | 6 | This version of smrit is too old for the server; install a newer release. |
 
 ## Security
+
+The hosts the CLI connects to are built in, and nothing in a release build changes them:
+
+| Host | What for |
+|---|---|
+| `mcp.smrit.ai` | Signing in, every Smrit tool call, and importing documents. Your credentials are sent here and nowhere else. |
+| `trove.smrit.ai` | Uploading the files an import stores as objects, each to an address Smrit gives for that one file. No credential of yours goes with them. |
+| `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | `smrit upgrade` only: the latest release, its checksums and its binary, from the `smrit-ai/cli` releases. No credential of yours goes with them. |
+
+`smrit login` also opens Smrit's sign in page in your browser, and listens on 127.0.0.1, on your own machine, for the browser to come back.
 
 To report a vulnerability, email security@smrit.ai. Please do not open a public issue for it.
 
