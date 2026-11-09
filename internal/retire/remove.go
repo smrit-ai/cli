@@ -139,10 +139,9 @@ func confirmClean(root *os.Root, rootPath string, heads *gitHeads, items []item,
 // either in the moved file, which is then put back, or in a new file at the
 // old name, which is never touched.
 type remover struct {
-	root     *os.Root
-	rootPath string
-	rename   Renamer
-	heads    *gitHeads
+	root   *os.Root
+	rename Renamer
+	heads  *gitHeads
 }
 
 // remove returns removed true when the file is gone. Otherwise left says
@@ -154,8 +153,7 @@ func (rm *remover) remove(it item) (removed bool, left string, stop bool) {
 	if err != nil {
 		return false, cannot, true
 	}
-	abs := func(rel string) string { return filepath.Join(rm.rootPath, filepath.FromSlash(rel)) }
-	if err := rm.rename.Rename(abs(it.path), abs(tmp)); err != nil {
+	if err := rm.rename.Rename(rm.root, filepath.FromSlash(it.path), filepath.FromSlash(tmp)); err != nil {
 		rm.root.Remove(filepath.FromSlash(tmp))
 		return false, cannot, true
 	}
@@ -206,15 +204,15 @@ func (rm *remover) placeholder(rel string) (string, error) {
 // the name meanwhile. It returns reason when the file is back, and a
 // sentence naming where it is kept when it could not be put back.
 func (rm *remover) putBack(tmp, rel, reason string) string {
-	abs := func(r string) string { return filepath.Join(rm.rootPath, filepath.FromSlash(r)) }
+	from, to := filepath.FromSlash(tmp), filepath.FromSlash(rel)
 	// A hard link fails when the name is taken, so nothing is replaced.
-	if err := os.Link(abs(tmp), abs(rel)); err == nil {
-		rm.root.Remove(filepath.FromSlash(tmp))
+	if err := rm.root.Link(from, to); err == nil {
+		rm.root.Remove(from)
 		return reason
 	}
 	// A folder that takes no hard links: rename, only while the name is free.
-	if _, err := rm.root.Lstat(filepath.FromSlash(rel)); errors.Is(err, fs.ErrNotExist) {
-		if err := os.Rename(abs(tmp), abs(rel)); err == nil {
+	if _, err := rm.root.Lstat(to); errors.Is(err, fs.ErrNotExist) {
+		if err := rm.root.Rename(from, to); err == nil {
 			return reason
 		}
 	}

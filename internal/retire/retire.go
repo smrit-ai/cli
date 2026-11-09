@@ -39,19 +39,22 @@ type Options struct {
 	Scan scan.Options
 	// Zips is where the zip is written and read back; nil is the disk.
 	Zips ZipStore
-	// Rename moves a file aside before it is removed; nil is os.Rename.
+	// Rename moves a file aside before it is removed; nil is os.Root.Rename.
 	Rename Renamer
 }
 
-// Renamer renames a file by absolute path. The real one is os.Rename; a test
-// wraps it to act between retire's steps.
+// Renamer renames a file inside the folder retire opened, by names relative
+// to it, never by a path rebuilt from the folder's name. The real one is
+// os.Root.Rename; a test wraps it to act between retire's steps.
 type Renamer interface {
-	Rename(oldpath, newpath string) error
+	Rename(root *os.Root, oldname, newname string) error
 }
 
-type osRename struct{}
+type rootRename struct{}
 
-func (osRename) Rename(oldpath, newpath string) error { return os.Rename(oldpath, newpath) }
+func (rootRename) Rename(root *os.Root, oldname, newname string) error {
+	return root.Rename(oldname, newname)
+}
 
 // Left is a file retire did not remove, and why.
 type Left struct {
@@ -304,9 +307,9 @@ func Run(ctx context.Context, id string, o Options) (Report, error) {
 	for _, it := range delItems {
 		order = append(order, removal{it, false})
 	}
-	rm := &remover{root: root, rootPath: rootPath, rename: o.Rename, heads: heads}
+	rm := &remover{root: root, rename: o.Rename, heads: heads}
 	if rm.rename == nil {
-		rm.rename = osRename{}
+		rm.rename = rootRename{}
 	}
 	for i, r := range order {
 		copyNote := ""

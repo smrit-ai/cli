@@ -1134,13 +1134,13 @@ type renameHook struct {
 	before, after func(oldpath string)
 }
 
-func (h renameHook) Rename(oldpath, newpath string) error {
+func (h renameHook) Rename(root *os.Root, oldname, newname string) error {
 	if h.before != nil {
-		h.before(oldpath)
+		h.before(oldname)
 	}
-	err := os.Rename(oldpath, newpath)
+	err := rootRename{}.Rename(root, oldname, newname)
 	if h.after != nil {
-		h.after(oldpath)
+		h.after(oldname)
 	}
 	return err
 }
@@ -1295,4 +1295,41 @@ func TestPutBackNeverReplaces(t *testing.T) {
 	if content(t, filepath.Join(root, kept)) != "edited\n" {
 		t.Errorf("the edited bytes are not at %s", kept)
 	}
+}
+
+// Retire moves and puts back through the folder it opened, never by a path
+// rebuilt from its name: a folder swapped for another while retire runs is
+// left alone, and the file in the folder retire opened is put back there.
+func TestFolderSwappedMidRunIsNotTouched(t *testing.T) {
+	isolate(t)
+	parent := realPath(t, t.TempDir())
+	root := filepath.Join(parent, "notes")
+	moved := filepath.Join(parent, "notes-moved")
+	f := newFixture(t, root)
+	f.done("a.md", "as imported\n")
+	f.rename = renameHook{before: func(old string) {
+		if filepath.Base(old) != "a.md" {
+			return
+		}
+		write(t, root, "a.md", "edited at the last moment\n")
+		if err := os.Rename(root, moved); err != nil {
+			t.Fatal(err)
+		}
+		write(t, root, "a.md", "decoy\n")
+	}}
+	rep, _ := f.retire(true)
+	if len(rep.Zipped) != 0 || len(rep.Deleted) != 0 {
+		t.Fatalf("report: %+v", rep)
+	}
+	if content(t, filepath.Join(root, "a.md")) != "decoy\n" {
+		t.Error("the decoy was touched")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 {
+		t.Errorf("the decoy folder changed: %v %v", entries, err)
+	}
+	if content(t, filepath.Join(moved, "a.md")) != "edited at the last moment\n" {
+		t.Error("the edited file was not put back in the folder retire opened")
+	}
+	assertNoTemporaries(t, moved)
 }
