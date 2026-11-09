@@ -69,3 +69,6 @@ testdata/secret_cases.json smrit-token ffd27e026449779f2ec1cf0b68a6224d84e133ae
 testdata/secret_cases.json stripe-live-key ffd27e026449779f2ec1cf0b68a6224d84e133ae
 testdata/secret_cases.json token-assignment ffd27e026449779f2ec1cf0b68a6224d84e133ae
 testdata/secret_cases.json url-credentials ffd27e026449779f2ec1cf0b68a6224d84e133ae
+internal/cli/scan_test.go aws-access-key-id d35a56d5fa2a5c28d2f25b8bac7d6b2e864c30f4
+internal/scan/scan_test.go aws-access-key-id 38ce467497818214e2ea18b5dad2f438e616519b
+internal/scan/scan_test.go password-assignment 38ce467497818214e2ea18b5dad2f438e616519b
