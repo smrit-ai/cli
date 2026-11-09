@@ -405,6 +405,29 @@ func TestKeepAndUsedAreLeft(t *testing.T) {
 	}
 }
 
+// Retired from the repository top, a page the site config names is kept:
+// the config is in the scanned folder too, and is still read for names.
+func TestUsedAtRepositoryTopIsLeft(t *testing.T) {
+	isolate(t)
+	repo := newRepo(t)
+	f := newFixture(t, repo)
+	f.done("docs/guide.md", "# Guide\n")
+	f.done("docs/other.md", "# Other\n")
+	write(t, repo, "mkdocs.yml", "nav:\n  - docs/guide.md\n")
+	commitAll(t, repo, "all")
+
+	rep := f.mustRetire(true)
+	if !slices.Equal(rep.Deleted, []string{"docs/other.md"}) || len(rep.Zipped) != 0 {
+		t.Fatalf("report: %+v", rep)
+	}
+	if r := leftReason(rep, "docs/guide.md"); !strings.Contains(r, "names it") {
+		t.Errorf("used: reason %q", r)
+	}
+	if !exists(t, filepath.Join(repo, "docs/guide.md")) {
+		t.Fatal("a page the site config names was removed")
+	}
+}
+
 func TestEditedSinceImportIsLeft(t *testing.T) {
 	isolate(t)
 	root := realPath(t, t.TempDir())

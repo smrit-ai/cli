@@ -412,7 +412,8 @@ func markUsed(ctx context.Context, g *gitRunner, res *Result, repos map[string]*
 		for k, i := range idx {
 			f := res.Files[i]
 			rel, _ := filepath.Rel(top, filepath.Join(f.Root, filepath.FromSlash(f.Path)))
-			files[k] = usedFile{repoRel: filepath.ToSlash(rel), rootRel: f.Path}
+			importable := f.Kind == KindDocument || f.Kind == KindWorkbook || f.Kind == KindObject
+			files[k] = usedFile{repoRel: filepath.ToSlash(rel), rootRel: f.Path, importable: importable}
 		}
 		used, ok := g.findUsed(ctx, repos[top], files)
 		if !ok {

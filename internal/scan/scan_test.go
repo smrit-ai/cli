@@ -402,6 +402,41 @@ func TestUsedByDocsConfigAndCode(t *testing.T) {
 	}
 }
 
+// At the repository top every tracked file is inside the root, but configs,
+// scripts and code are still read for names: only documents, workbooks and
+// objects are left out of the search, as they are what an import moves.
+func TestUsedAtRepositoryTop(t *testing.T) {
+	isolate(t)
+	repo := newRepo(t)
+	write(t, repo, "mkdocs.yml", "site_name: Docs\nnav:\n  - Guide: docs/guide.md\n")
+	write(t, repo, "build.sh", "#!/bin/sh\npython3 scripts/helper.py docs/notes/plan.md\n")
+	write(t, repo, "scripts/helper.py", "print('help')\n")
+	write(t, repo, "docs/guide.md", "# Guide\n")
+	write(t, repo, "docs/notes/plan.md", "# Plan\n")
+	write(t, repo, "docs/index.md", "See docs/orphan.md and docs/data.csv.\n")
+	write(t, repo, "docs/orphan.md", "# Orphan\n")
+	write(t, repo, "docs/data.csv", "a,b\n")
+	// git's own path lists name files without anything reading them.
+	write(t, repo, ".gitattributes", "docs/orphan.md text\n")
+	write(t, repo, ".gitignore", "docs/data.csv\n")
+	commitAll(t, repo, "init")
+
+	res := scanOK(t, Options{}, repo)
+	for p, want := range map[string]bool{
+		"docs/guide.md":      true,  // named by mkdocs.yml, itself in the root
+		"docs/notes/plan.md": true,  // named by a script in the root
+		"scripts/helper.py":  true,  // a script named by a script is used too
+		"docs/orphan.md":     false, // named only by a document and .gitattributes
+		"docs/data.csv":      false, // named only by a document and .gitignore
+		"docs/index.md":      false,
+		"mkdocs.yml":         false,
+	} {
+		if got := hasFlag(file(t, res, p), "used"); got != want {
+			t.Errorf("%s used = %v, want %v", p, got, want)
+		}
+	}
+}
+
 func TestGitStates(t *testing.T) {
 	isolate(t)
 	upstream := t.TempDir()

@@ -14,15 +14,25 @@ import (
 // such file would be marked used, so it is not searched at all.
 const minUsedPattern = 4
 
+// gitPathLists are never searched: a path named in .gitignore or
+// .gitattributes is one git ignores or treats specially, not one anything
+// reads.
+var gitPathLists = []string{":(exclude,glob)**/.gitignore", ":(exclude,glob)**/.gitattributes"}
+
 // usedFile is one scanned file in a repository, by both of its names.
+// importable is a document, workbook or object: what an import moves.
 type usedFile struct {
 	repoRel, rootRel string
+	importable       bool
 }
 
 // findUsed returns the indexes of files whose repository relative or root
 // relative path appears, as a literal string, in a tracked file of the same
-// repository that is not itself one of the scanned files. It makes one git
-// grep call for the repository. ok is false when git grep failed.
+// repository that is not itself a scanned document, workbook or object. A
+// scanned file of any other kind, a config, a script or code, is searched
+// even inside the root: a mkdocs.yml at the repository top still names the
+// pages beside it. Any file can be marked used, whatever its kind. It makes
+// one git grep call for the repository. ok is false when git grep failed.
 func (g *gitRunner) findUsed(ctx context.Context, ri *repoInfo, files []usedFile) (used map[int]bool, ok bool) {
 	used = map[int]bool{}
 	byPattern := map[string][]int{}
@@ -39,13 +49,15 @@ func (g *gitRunner) findUsed(ctx context.Context, ri *repoInfo, files []usedFile
 	if len(byPattern) == 0 {
 		return used, true
 	}
-	scanned := map[string]bool{}
+	excluded := map[string]bool{}
 	for _, f := range files {
-		scanned[f.repoRel] = true
+		if f.importable {
+			excluded[f.repoRel] = true
+		}
 	}
-	excludes, anyLeft := excludeSpecs(ri.tracked, scanned, ri.scope)
+	excludes, anyLeft := excludeSpecs(ri.tracked, excluded, ri.scope)
 	if !anyLeft {
-		return used, true // every tracked file was scanned; nothing else can name one
+		return used, true // every tracked file is excluded; nothing else can name one
 	}
 
 	patterns := make([]string, 0, len(byPattern))
@@ -62,11 +74,9 @@ func (g *gitRunner) findUsed(ctx context.Context, ri *repoInfo, files []usedFile
 	if err := os.WriteFile(pf, []byte(strings.Join(patterns, "\n")+"\n"), 0o600); err != nil {
 		return used, false
 	}
-	args := []string{"grep", "-I", "-o", "-h", "-F", "-f", pf}
-	if len(excludes) > 0 {
-		args = append(args, "--")
-		args = append(args, excludes...)
-	}
+	args := []string{"grep", "-I", "-o", "-h", "-F", "-f", pf, "--"}
+	args = append(args, gitPathLists...)
+	args = append(args, excludes...)
 	out, code, err := g.run(ctx, ri.top, args...)
 	if err != nil || (code != 0 && code != 1) {
 		return used, false
@@ -111,13 +121,13 @@ func containedPatterns(found map[string]bool, patterns []string) map[string]bool
 	return out
 }
 
-// excludeSpecs returns pathspecs excluding every scanned tracked file. A
-// folder whose tracked files were all scanned is excluded as one pathspec,
-// so the argument list stays short. anyLeft is false when no tracked file
-// is left to search.
+// excludeSpecs returns pathspecs excluding every tracked file in scanned,
+// the set to leave out of the search. A folder whose tracked files are all
+// in the set is excluded as one pathspec, so the argument list stays short.
+// anyLeft is false when no tracked file is left to search.
 //
 // When scope is set, tracked holds only the files under those folders, so
-// only a folder inside the scope can be known to be fully scanned, and
+// only a folder inside the scope can be known to be fully in the set, and
 // there may always be tracked files left outside it.
 func excludeSpecs(tracked, scanned map[string]bool, scope []string) (specs []string, anyLeft bool) {
 	inScope := func(d string) bool {
