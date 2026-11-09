@@ -329,7 +329,7 @@ func TestImportRefusedRootExits4BeforeAnyRequest(t *testing.T) {
 }
 
 // A workbook already in Smrit is listed with its sentence and counts as
-// done for the exit code (ruling, Task 13 review).
+// done for the exit code.
 func TestImportWorkbookAlreadyInSmritExits0AndSaysSo(t *testing.T) {
 	f, srv := newImportFake(t)
 	f.duplicate = true

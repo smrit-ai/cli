@@ -65,3 +65,13 @@ func TestSecretAcrossWindowEdge(t *testing.T) {
 		t.Fatal("plain text flagged")
 	}
 }
+
+func TestSecretPatternsNamesWithoutQuoting(t *testing.T) {
+	got := SecretPatterns("key AKIA" + "ABCDEFGHIJKLMNOP and bearer " + "abcdefghijklmnopqrstuvwx")
+	if len(got) != 2 || got[0] != "aws-access-key-id" || got[1] != "bearer-token" {
+		t.Fatalf("%v", got)
+	}
+	if len(SecretPatterns("nothing here")) != 0 {
+		t.Fatal("matched clean text")
+	}
+}

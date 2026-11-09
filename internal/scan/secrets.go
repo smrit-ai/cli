@@ -7,8 +7,8 @@ import (
 	"unicode/utf8"
 )
 
-// The secret patterns are the memory plugin's (claude-plugins, file
-// plugins/memory/smrit_memory/secrets_scan.py), ported to Go. Go's regular
+// The secret patterns are those of Smrit's memory plugin, which is written in
+// Python, ported to Go so that both refuse the same text. Go's regular
 // expressions are RE2, with no lookbehind or lookahead, so each lookaround
 // is a check in code around a match, with the same meaning. Three more of
 // Python's rules differ from Go's and are spelled out here:
@@ -73,6 +73,35 @@ var plain = compileAll([]string{
 	`(?:` + ci("password") + `|` + ci("passwd") + `|` + ci("secret") + `|` + ci("api") + `[_ ]?` + ci("key") +
 		`|` + ci("access key") + `|` + ci("client secret") + `)[` + pyspace + `]*[:=][` + pyspace + `]*[^` + pyspace + `]{8}`,
 })
+
+// plainNames and guardNames name the patterns above, in the same order, so a
+// report can say which pattern matched without quoting the matching text.
+var plainNames = []string{
+	"aws-access-key-id", "aws-secret-access-key", "github-token", "github-pat", "gitlab-token",
+	"npm-token", "anthropic-key", "stripe-live-key", "slack-token", "slack-app-token", "slack-webhook",
+	"google-api-key", "google-oauth-token", "google-client-secret", "private-key", "password-assignment",
+}
+
+var guardNames = []string{
+	"openai-project-key", "openai-key", "jwt", "smrit-token", "bearer-token", "url-credentials", "token-assignment",
+}
+
+// SecretPatterns returns the names of the patterns text matches, in a fixed
+// order. It never returns any of the matching text.
+func SecretPatterns(text string) []string {
+	var out []string
+	for i, re := range plain {
+		if re.MatchString(text) {
+			out = append(out, plainNames[i])
+		}
+	}
+	for i, g := range guards {
+		if g.find(text) {
+			out = append(out, guardNames[i])
+		}
+	}
+	return out
+}
 
 func compileAll(sources []string) []*regexp.Regexp {
 	out := make([]*regexp.Regexp, len(sources))
@@ -220,7 +249,7 @@ func tokenValue(value string) bool {
 }
 
 // ContainsSecret reports whether text holds anything shaped like a
-// credential, by the memory plugin's patterns.
+// credential, by the patterns above.
 func ContainsSecret(text string) bool {
 	for _, re := range plain {
 		if re.MatchString(text) {

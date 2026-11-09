@@ -1,11 +1,11 @@
 // Package auth signs the CLI in to Smrit as its own OAuth client and keeps an
-// access token fresh. It is a port, rule for rule, of the memory plugin's
-// client (claude-plugins smrit_memory/oauth.py).
+// access token fresh. It follows the same rules as Smrit's memory plugin
+// client, so both behave alike.
 //
 // The CLI registers itself (RFC 7591), signs the person in through their
 // browser with PKCE and a loopback redirect (RFC 8252), and holds one refresh
 // token per profile. The server kills the whole chain when a rotated refresh
-// token is presented twice (api/smrit/oauth/views.py _refresh), so every
+// token is presented twice, so every
 // refresh happens under one exclusive flock per profile and rereads the store
 // first.
 //

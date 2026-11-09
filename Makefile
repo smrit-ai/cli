@@ -13,8 +13,8 @@ test:
 test-install:
 	sh scripts/install_test.sh
 
-# Regenerates testdata/secret_cases.json from the memory plugin's patterns,
-# when the plugins repository is checked out beside this one.
+# Regenerates testdata/secret_cases.json from the Python memory plugin's patterns,
+# when the plugin's repository is checked out beside this one.
 secret-cases:
 	python3 -I scripts/secret_cases.py
 
