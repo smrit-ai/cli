@@ -76,7 +76,9 @@ type harness struct {
 	// global is the instruction file read in every project.
 	global      func(c *Config) string
 	projectFile string
-	inspect     func(ctx context.Context, c *Config) (entry, error)
+	// inspect returns every smrit entry that applies: none, one, or for
+	// Claude Code a local or project one and the user one beneath it.
+	inspect func(ctx context.Context, c *Config) ([]entry, error)
 	// extras reads settings the inspecting command does not show; nil when
 	// it shows them all.
 	extras func(c *Config) ([]string, error)
@@ -135,7 +137,11 @@ func unknown(argv []string) error {
 }
 
 func ran(c *Config, ctx context.Context, argv []string) (string, string, int, error) {
-	out, errs, code, err := c.Exec(ctx, c.WorkDir, argv)
+	return ranIn(c, ctx, c.WorkDir, argv)
+}
+
+func ranIn(c *Config, ctx context.Context, dir string, argv []string) (string, string, int, error) {
+	out, errs, code, err := c.Exec(ctx, dir, argv)
 	if err != nil && !errors.Is(err, ErrCommandMissing) {
 		return "", "", -1, &Refused{fmt.Sprintf("Could not run %s: %v", argv[0], err)}
 	}
@@ -161,22 +167,51 @@ var claudeCode = &harness{
 			return nil, &Refused{"Claude Code's smrit server comes from this project's .mcp.json, which other people share, so setup does not change it. Change its address there by hand, then run setup again."}
 		case "local":
 			return []string{"claude", "mcp", "remove", "--scope", "local", ServerName}, nil
-		case "user":
-			return []string{"claude", "mcp", "remove", "--scope", "user", ServerName}, nil
 		}
-		return nil, &Refused{"claude mcp get smrit did not say which scope the smrit server is in, so setup does not remove it. Change its address by hand, then run setup again."}
+		return []string{"claude", "mcp", "remove", "--scope", "user", ServerName}, nil
 	},
 	approval: func(c *Config) string {
 		return fmt.Sprintf("Restart Claude Code, run /mcp, select smrit and sign in, checking that you approve %s.", c.Org)
 	},
 }
 
-// inspectClaude reads claude mcp get smrit: on success a "smrit:" line,
-// then indented "Key: value" lines up to a blank line. Scope, Status, Type,
-// URL and Issue are known; any other key is a setting beyond the address.
-func inspectClaude(ctx context.Context, c *Config) (entry, error) {
+// inspectClaude reads the smrit entry that applies in the project, which
+// claude mcp get shows local scope first, then project, then user. When that
+// one is not the user scope's, it reads again in an empty folder of its own,
+// where no local or project entry applies, to see the user scope's too.
+func inspectClaude(ctx context.Context, c *Config) ([]entry, error) {
+	first, err := readClaude(ctx, c, c.WorkDir)
+	if err != nil || !first.present || first.scope == "user" {
+		if first.missing || first.present {
+			return []entry{first}, err
+		}
+		return nil, err
+	}
+	neutral, err := os.MkdirTemp("", "smrit-setup-")
+	if err != nil {
+		return nil, &Refused{fmt.Sprintf("Could not make an empty folder to read Claude Code's user scope from: %v", err)}
+	}
+	defer os.RemoveAll(neutral)
+	user, err := readClaude(ctx, c, neutral)
+	if err != nil {
+		return nil, err
+	}
+	if !user.present {
+		return []entry{first}, nil
+	}
+	if user.scope != "user" {
+		return nil, unknown([]string{"claude", "mcp", "get", ServerName})
+	}
+	return []entry{first, user}, nil
+}
+
+// readClaude reads claude mcp get smrit run in dir: on success a "smrit:"
+// line, then indented "Key: value" lines up to a blank line. Scope, Status,
+// Type, URL and Issue are known; any other key is a setting beyond the
+// address. An entry whose scope is not user, local or project is refused.
+func readClaude(ctx context.Context, c *Config, dir string) (entry, error) {
 	argv := []string{"claude", "mcp", "get", ServerName}
-	out, errs, code, err := ran(c, ctx, argv)
+	out, errs, code, err := ranIn(c, ctx, dir, argv)
 	if errors.Is(err, ErrCommandMissing) {
 		return entry{missing: true}, nil
 	} else if err != nil {
@@ -231,6 +266,9 @@ func inspectClaude(ctx context.Context, c *Config) (entry, error) {
 	if e.url == "" {
 		return entry{}, &Refused{"claude mcp get smrit shows no address for the smrit server, so it is not Smrit's and setup leaves it alone. Rename or remove it in Claude Code, then run setup again."}
 	}
+	if e.scope == "" {
+		return entry{}, &Refused{"claude mcp get smrit did not say which scope the smrit server is in, so setup cannot tell which entry it would change, and changes nothing. Check it in Claude Code, or upgrade smrit."}
+	}
 	e.extras = sortedKeys(extras)
 	return e, nil
 }
@@ -259,8 +297,18 @@ var codex = &harness{
 }
 
 // inspectCodex reads codex mcp get smrit --json, or, from a codex that does
-// not know --json there, the smrit item of codex mcp list --json.
-func inspectCodex(ctx context.Context, c *Config) (entry, error) {
+// not know --json there, the smrit item of codex mcp list --json. Codex says
+// a server is missing with exit 1, and an unknown argument with exit 2, its
+// argument parser's; the same words on any other exit are refused.
+func inspectCodex(ctx context.Context, c *Config) ([]entry, error) {
+	e, err := readCodex(ctx, c)
+	if err != nil || (!e.present && !e.missing) {
+		return nil, err
+	}
+	return []entry{e}, nil
+}
+
+func readCodex(ctx context.Context, c *Config) (entry, error) {
 	argv := []string{"codex", "mcp", "get", ServerName, "--json"}
 	out, errs, code, err := ran(c, ctx, argv)
 	if errors.Is(err, ErrCommandMissing) {
@@ -271,11 +319,11 @@ func inspectCodex(ctx context.Context, c *Config) (entry, error) {
 	if code == 0 {
 		return codexEntry([]byte(out), argv)
 	}
-	said := strings.TrimSpace(out + errs)
-	if strings.Contains(said, "No MCP server named 'smrit' found") {
+	said := strings.TrimSpace(errs + out)
+	if code == 1 && strings.HasPrefix(said, "Error: No MCP server named 'smrit' found") {
 		return entry{}, nil
 	}
-	if !strings.Contains(said, "'--json'") {
+	if code != 2 || !strings.HasPrefix(said, "error: unexpected argument '--json'") {
 		return entry{}, failed(argv, code)
 	}
 	listArgv := []string{"codex", "mcp", "list", "--json"}
@@ -369,9 +417,17 @@ var antigravity = &harness{
 	},
 }
 
-// inspectAgy reads agy mcp list: exactly "No MCP servers configured.", or a
+func inspectAgy(ctx context.Context, c *Config) ([]entry, error) {
+	e, err := readAgy(ctx, c)
+	if err != nil || (!e.present && !e.missing) {
+		return nil, err
+	}
+	return []entry{e}, nil
+}
+
+// readAgy reads agy mcp list: exactly "No MCP servers configured.", or a
 // NAME TYPE STATUS COMMAND/URL header and one row a server.
-func inspectAgy(ctx context.Context, c *Config) (entry, error) {
+func readAgy(ctx context.Context, c *Config) (entry, error) {
 	argv := []string{"agy", "mcp", "list"}
 	out, _, code, err := ran(c, ctx, argv)
 	if errors.Is(err, ErrCommandMissing) {

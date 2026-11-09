@@ -90,6 +90,9 @@ type Command struct {
 	Exit *int   `json:"exit,omitempty"`
 	// Output is the end of what a failed command wrote.
 	Output string `json:"output,omitempty"`
+
+	// restore puts back the entry a replacement removed, if this add fails.
+	restore []string
 }
 
 // Plan is everything one run would change, and after Apply, what it did.
@@ -107,9 +110,6 @@ type Plan struct {
 	Notes    []string      `json:"notes"`
 	// Next is what is still owed after Apply: the harness's own approval.
 	Next []string `json:"next"`
-
-	// restore puts back the entry a replacement removed, if the add fails.
-	restore []string
 }
 
 // Prepare reads everything setup needs and works out every change, writing
@@ -164,29 +164,36 @@ func Prepare(ctx context.Context, c *Config) (*Plan, error) {
 		}
 	}
 
-	e, err := h.inspect(ctx, c)
+	entries, err := h.inspect(ctx, c)
 	if err != nil {
 		return nil, err
 	}
 	switch {
-	case e.missing:
+	case len(entries) == 1 && entries[0].missing:
 		p.Entry = "manual"
 		p.Commands = append(p.Commands, &Command{Argv: h.add(address, "")})
 		p.Notes = append(p.Notes, fmt.Sprintf("%s's command, %s, was not found on PATH, so setup cannot check or change its smrit server. Run the command below yourself where %s is installed.", h.name, h.bin, h.name))
-	case !e.present:
+	case len(entries) == 0:
 		p.Entry = "add"
 		p.Commands = append(p.Commands, &Command{Argv: h.add(address, "")})
 	default:
-		action, err := classify(e.url, c, h)
-		if err != nil {
-			return nil, err
+		if len(entries) > 1 {
+			var found []string
+			for _, e := range entries {
+				found = append(found, fmt.Sprintf("in its %s scope at %s", e.scope, redact(e.url)))
+			}
+			p.Notes = append(p.Notes, fmt.Sprintf("%s has two smrit servers, %s. setup handles each in its own scope.", h.name, strings.Join(found, ", and ")))
 		}
-		switch action {
-		case "reuse":
-			p.Entry = "reuse"
-			p.Notes = append(p.Notes, fmt.Sprintf("%s's smrit server already points at %s; setup leaves it as it is.", h.name, address))
-		case "replace":
-			p.Entry = "replace"
+		// Every entry is decided before any command is planned, so one that
+		// is refused leaves the others untouched too.
+		actions := make([]string, len(entries))
+		for i, e := range entries {
+			if actions[i], err = classify(e.url, c, h, whose(h, e)); err != nil {
+				return nil, err
+			}
+			if actions[i] != "replace" {
+				continue
+			}
 			extras := e.extras
 			if h.extras != nil {
 				more, err := h.extras(c)
@@ -196,25 +203,50 @@ func Prepare(ctx context.Context, c *Config) (*Plan, error) {
 				extras = append(extras, more...)
 			}
 			if len(extras) > 0 {
-				return nil, &Refused{fmt.Sprintf("%s's smrit server points at %s and carries more than an address: %s. setup never removes or replaces it, because those would be lost. Change its address to %s by hand in %s, keeping them, then run setup again.", h.name, redact(e.url), quotedList(extras), address, h.name)}
+				return nil, &Refused{fmt.Sprintf("%s smrit server points at %s and carries more than an address: %s. setup never removes or replaces it, because those would be lost. Change its address to %s by hand in %s, keeping them, then run setup again.", whose(h, e), redact(e.url), quotedList(extras), address, h.name)}
 			}
 			if h.remove != nil {
-				rm, err := h.remove(e)
-				if err != nil {
+				if _, err := h.remove(e); err != nil {
 					return nil, err
 				}
-				p.Commands = append(p.Commands, &Command{Argv: rm, Dir: localDir(rm, c)})
-				p.restore = h.add(e.url, e.scope)
 			}
-			p.Commands = append(p.Commands, &Command{Argv: h.add(address, "")})
-			p.Notes = append(p.Notes, fmt.Sprintf("%s's smrit server points at %s. setup pins it to %s, so a later sign in cannot land in another organization.", h.name, redact(e.url), c.Org))
 		}
-		if e.disabled {
-			p.Notes = append(p.Notes, fmt.Sprintf("%s's smrit server is turned off. Turn it on in %s.", h.name, h.name))
+		p.Entry = "reuse"
+		for i, e := range entries {
+			if actions[i] == "reuse" {
+				p.Notes = append(p.Notes, fmt.Sprintf("%s smrit server already points at %s; setup leaves it as it is.", whose(h, e), address))
+			} else {
+				p.Entry = "replace"
+				if h.remove != nil {
+					rm, _ := h.remove(e)
+					p.Commands = append(p.Commands, &Command{Argv: rm, Dir: localDir(rm, c)})
+				}
+				// In the scope it was found in: a project's own entry never
+				// becomes one for every project.
+				add := h.add(address, e.scope)
+				cmd := &Command{Argv: add, Dir: localDir(add, c)}
+				if h.remove != nil {
+					cmd.restore = h.add(e.url, e.scope)
+				}
+				p.Commands = append(p.Commands, cmd)
+				p.Notes = append(p.Notes, fmt.Sprintf("%s smrit server points at %s. setup pins it to %s, so a later sign in cannot land in another organization.", whose(h, e), redact(e.url), c.Org))
+			}
+			if e.disabled {
+				p.Notes = append(p.Notes, fmt.Sprintf("%s smrit server is turned off. Turn it on in %s.", whose(h, e), h.name))
+			}
 		}
 	}
 	p.Next = append(p.Next, h.approval(c))
 	return p, nil
+}
+
+// whose names an entry for a message: the harness, and the scope when the
+// harness has scopes.
+func whose(h *harness, e entry) string {
+	if e.scope != "" {
+		return fmt.Sprintf("%s's %s scope", h.name, e.scope)
+	}
+	return h.name + "'s"
 }
 
 var pinnedPath = regexp.MustCompile(`^/mcp/o/([^/]+)/([^/]+)$`)
@@ -224,13 +256,13 @@ var pinnedPath = regexp.MustCompile(`^/mcp/o/([^/]+)/([^/]+)$`)
 // bare address or this organization's under an older slug. Anything else is
 // refused: another host, another organization, a path setup does not
 // recognise, or an address carrying a user, a query or a fragment.
-func classify(raw string, c *Config, h *harness) (string, error) {
+func classify(raw string, c *Config, h *harness, who string) (string, error) {
 	pinned := c.Origin + c.Endpoint
 	if raw == pinned || raw == pinned+"/" {
 		return "reuse", nil
 	}
 	leave := func(why string) (string, error) {
-		return "", &Refused{fmt.Sprintf("%s already has a server named smrit, at %s, %s. setup leaves it alone: change or remove it by hand in %s, then run setup again.", h.name, redact(raw), why, h.name)}
+		return "", &Refused{fmt.Sprintf("%s smrit server is at %s, %s. setup leaves it alone: change or remove it by hand in %s, then run setup again.", who, redact(raw), why, h.name)}
 	}
 	u, err1 := url.Parse(raw)
 	o, err2 := url.Parse(c.Origin)
@@ -249,7 +281,7 @@ func classify(raw string, c *Config, h *harness) (string, error) {
 			return "replace", nil
 		}
 		if m != nil {
-			return "", &Refused{fmt.Sprintf("%s's smrit server is pinned to another organization, %s. setup leaves it alone: sign in to that one with smrit login and run setup with --org, or remove the entry in %s first.", h.name, quoted(m[1]), h.name)}
+			return "", &Refused{fmt.Sprintf("%s smrit server is pinned to another organization, %s. setup leaves it alone: sign in to that one with smrit login and run setup with --org, or remove the entry in %s first.", who, quoted(m[1]), h.name)}
 		}
 		return leave("an organization address setup does not recognise")
 	}
@@ -433,7 +465,7 @@ func (p *Plan) Apply(ctx context.Context, c *Config) error {
 	if p.Entry == "manual" {
 		return &Partial{fmt.Sprintf("The files are written, but %s's smrit server is not set up: run %s yourself.", p.Name, Display(p.Commands[0].Argv))}
 	}
-	for i, cmd := range p.Commands {
+	for _, cmd := range p.Commands {
 		out, errs, code, err := c.Exec(ctx, c.WorkDir, cmd.Argv)
 		cmd.Ran = err == nil
 		if err == nil {
@@ -447,11 +479,11 @@ func (p *Plan) Apply(ctx context.Context, c *Config) error {
 		if err != nil {
 			msg = fmt.Sprintf("Could not run %s: %v", Display(cmd.Argv), err)
 		}
-		if i > 0 && p.restore != nil {
-			if _, _, rc, rerr := c.Exec(ctx, c.WorkDir, p.restore); rerr == nil && rc == 0 {
+		if cmd.restore != nil {
+			if _, _, rc, rerr := c.Exec(ctx, c.WorkDir, cmd.restore); rerr == nil && rc == 0 {
 				msg += "; the previous smrit server was put back"
 			} else {
-				msg += fmt.Sprintf("; putting the previous smrit server back failed too, so run %s yourself", Display(p.restore))
+				msg += fmt.Sprintf("; putting the previous smrit server back failed too, so run %s yourself", Display(cmd.restore))
 			}
 		}
 		return &Partial{msg + "."}

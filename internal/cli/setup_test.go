@@ -42,21 +42,34 @@ if [ "$1 $2" = "mcp add" ] && [ -f "$d/$n.addfail" ]; then rm -f "$d/$n.addfail"
 if [ "$1 $2" = "mcp remove" ] && [ -f "$d/$n.rmfail" ]; then echo 'remove failed' >&2; exit 1; fi
 `
 
-const fakeClaude = "#!/bin/sh\n" + fakeCommon + `case "$1 $2" in
+// fakeClaude keeps an entry per scope, as Claude Code does: claude.<scope>.url,
+// and for local and project scope claude.<scope>.dir, the folder it belongs
+// to. get shows the one that applies in the folder it runs in, local first,
+// then project, then user; add without --scope is local, as in Claude Code.
+const fakeClaude = "#!/bin/sh\n" + fakeCommon + `here=$(pwd -P)
+scope=local; prev=; for a in "$@"; do [ "$prev" = --scope ] && scope="$a"; prev="$a"; last="$a"; done
+case "$1 $2" in
 "mcp get")
-  if [ -f "$d/claude.url" ]; then
-    printf 'smrit:\n  Scope: %s\n  Status: connected\n  Type: http\n  URL: %s\n\nTo remove this server, run: claude mcp remove smrit -s user\n' "$(cat "$d/claude.scope")" "$(cat "$d/claude.url")"
+  for s in local project user; do
+    [ -f "$d/claude.$s.url" ] || continue
+    if [ "$s" != user ] && [ "$(cat "$d/claude.$s.dir")" != "$here" ]; then continue; fi
+    case $s in
+    local) label='Local config (private to you in this project)';;
+    project) label='Project config (shared via .mcp.json)';;
+    user) label='User config (available in all your projects)';;
+    esac
+    printf 'smrit:\n  Scope: %s\n  Status: connected\n  Type: http\n  URL: %s\n\nTo remove this server, run: claude mcp remove smrit -s %s\n' "$label" "$(cat "$d/claude.$s.url")" "$s"
     exit 0
-  fi
+  done
   echo 'No MCP server named "smrit". Run claude mcp add to add one.'
   exit 1;;
 "mcp add")
-  scope=user; prev=; for a in "$@"; do [ "$prev" = --scope ] && scope="$a"; prev="$a"; last="$a"; done
-  printf '%s' "$last" > "$d/claude.url"
-  if [ "$scope" = local ]; then printf 'Local config (private to you in this project)' > "$d/claude.scope"; else printf 'User config (available in all your projects)' > "$d/claude.scope"; fi
+  printf '%s' "$last" > "$d/claude.$scope.url"
+  [ "$scope" = user ] || printf '%s' "$here" > "$d/claude.$scope.dir"
   exit 0;;
 "mcp remove")
-  rm -f "$d/claude.url"; exit 0;;
+  [ -f "$d/claude.$scope.url" ] || { echo "No $scope-scoped MCP server found with name: smrit" >&2; exit 1; }
+  rm -f "$d/claude.$scope.url"; exit 0;;
 esac
 exit 9
 `
@@ -120,7 +133,7 @@ func fakeHarnesses(t *testing.T, which ...string) *harnessFakes {
 		}
 	}
 	home := os.Getenv("HOME")
-	if !strings.HasPrefix(home, os.TempDir()) && !strings.Contains(home, "/T/") && !strings.HasPrefix(home, "/tmp") {
+	if !underTemp(home) {
 		t.Fatalf("HOME %s is not a temporary folder; refusing to run harness fakes", home)
 	}
 	t.Setenv("PATH", bin+":/usr/bin:/bin")
@@ -140,18 +153,41 @@ func (h *harnessFakes) set(t *testing.T, name, body string) {
 
 func (h *harnessFakes) entry(t *testing.T, harness, url string) {
 	t.Helper()
-	h.set(t, harness+".url", url)
 	switch harness {
 	case "claude":
-		h.set(t, "claude.scope", "User config (available in all your projects)")
+		h.set(t, "claude.user.url", url)
 	case "agy":
+		h.set(t, "agy.url", url)
 		writeFile(t, filepath.Join(os.Getenv("HOME"), ".gemini", "config", "mcp_config.json"),
 			`{"mcpServers":{"other":{"command":"echo","args":["hi"],"disabled":false},"smrit":{"disabled":false,"serverUrl":"`+url+`"}}}`, 0o644)
+	default:
+		h.set(t, harness+".url", url)
 	}
 }
 
+// claudeAt gives the fake Claude Code a smrit entry in a local or project
+// scope belonging to dir.
+func (h *harnessFakes) claudeAt(t *testing.T, scope, url, dir string) {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.set(t, "claude."+scope+".url", url)
+	h.set(t, "claude."+scope+".dir", real)
+}
+
+// url is the harness's smrit entry; for Claude Code, the user scope one.
 func (h *harnessFakes) url(harness string) string {
-	b, _ := os.ReadFile(filepath.Join(h.state, harness+".url"))
+	name := harness + ".url"
+	if harness == "claude" {
+		name = "claude.user.url"
+	}
+	return h.slot(name)
+}
+
+func (h *harnessFakes) slot(name string) string {
+	b, _ := os.ReadFile(filepath.Join(h.state, name))
 	return string(b)
 }
 
@@ -682,7 +718,6 @@ func TestSetupUsage(t *testing.T) {
 
 func TestSetupProjectDefaultsToRepositoryTop(t *testing.T) {
 	svc, _, _, _, _ := setupEnv(t)
-	t.Setenv("PATH", os.Getenv("PATH")+":/opt/homebrew/bin:/usr/local/bin")
 	repo := t.TempDir()
 	if out, err := execGit(repo, "init", "-q"); err != nil {
 		t.Skipf("git is not available: %v %s", err, out)
@@ -759,6 +794,8 @@ func TestSetupUnknownOutputRefuses(t *testing.T) {
 		{"claude failure naming no server", "claude-code", "claude", "Error: no MCP servers could be loaded, the config is damaged\n", "1"},
 		{"codex failure naming no server", "codex", "codex", "Error: No MCP server config could be parsed\n", "1"},
 		{"codex empty object", "codex", "codex", "{}\n", "0"},
+		{"codex no server on another exit", "codex", "codex", "Error: No MCP server named 'smrit' found.\n", "3"},
+		{"codex unknown argument on another exit", "codex", "codex", "error: unexpected argument '--json' found\n", "1"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -902,40 +939,112 @@ func TestSetupReportsAFailedCommand(t *testing.T) {
 }
 
 func TestSetupClaudeScopes(t *testing.T) {
-	t.Run("local, read and changed in the project", func(t *testing.T) {
+	bareOf := func(url string) string { return strings.TrimSuffix(url, "/mcp/o/acme/"+orgID) + "/mcp" }
+	run := func(t *testing.T, svc *Services, project string) (int, string, string) {
+		return runCmd(t, svc, "setup", "claude-code", "--project", project, "--apply", "--json=false")
+	}
+	t.Run("local, re pinned in its own scope and project", func(t *testing.T) {
 		svc, _, h, _, url := setupEnv(t)
 		project := t.TempDir()
-		h.entry(t, "claude", strings.TrimSuffix(url, "/mcp/o/acme/"+orgID)+"/mcp")
-		h.set(t, "claude.scope", "Local config (private to you in this project)")
-		code, out, errs := runCmd(t, svc, "setup", "claude-code", "--project", project, "--apply", "--json=false")
+		h.claudeAt(t, "local", bareOf(url), project)
+		code, out, errs := run(t, svc, project)
+		if code != ExitOK {
+			t.Fatalf("exit %d\n%s\n%s", code, out, errs)
+		}
+		want := []string{"claude mcp get smrit", "claude mcp get smrit", "claude mcp remove --scope local smrit",
+			"claude mcp add --transport http --scope local smrit " + url}
+		if strings.Join(h.calls(), "\n") != strings.Join(want, "\n") {
+			t.Fatalf("calls:\n%s", strings.Join(h.calls(), "\n"))
+		}
+		real, _ := filepath.EvalSymlinks(project)
+		cw := h.cwds()
+		if cw[0] != real || cw[1] == real || cw[2] != real || cw[3] != real {
+			t.Fatalf("the local scope is read and changed in the project, the user scope elsewhere: %v", cw)
+		}
+		if h.slot("claude.local.url") != url || h.url("claude") != "" {
+			t.Fatalf("local %q user %q: a project's entry must not become everyone's", h.slot("claude.local.url"), h.url("claude"))
+		}
+		if !strings.Contains(out, "(in "+project+")") {
+			t.Fatalf("show where the local commands run:\n%s", out)
+		}
+	})
+	t.Run("local pinned, user bare: each in its own scope", func(t *testing.T) {
+		svc, _, h, _, url := setupEnv(t)
+		project := t.TempDir()
+		h.claudeAt(t, "local", url, project)
+		h.entry(t, "claude", bareOf(url))
+		code, out, errs := run(t, svc, project)
 		if code != ExitOK {
 			t.Fatalf("exit %d\n%s\n%s", code, out, errs)
 		}
 		c := h.calls()
-		if len(c) != 3 || c[1] != "claude mcp remove --scope local smrit" || c[2] != "claude mcp add --transport http --scope user smrit "+url {
+		if len(c) != 4 || c[2] != "claude mcp remove --scope user smrit" || c[3] != "claude mcp add --transport http --scope user smrit "+url {
 			t.Fatalf("calls %v", c)
 		}
-		real, _ := filepath.EvalSymlinks(project)
-		if cw := h.cwds(); cw[0] != real || cw[1] != real {
-			t.Fatalf("the local scope is the project's: %v", cw)
+		if h.url("claude") != url || h.slot("claude.local.url") != url {
+			t.Fatal("both entries end pinned")
+		}
+		if !strings.Contains(out, "local") || !strings.Contains(out, "user") {
+			t.Fatalf("report both entries:\n%s", out)
 		}
 	})
-	t.Run("project, refused", func(t *testing.T) {
+	t.Run("local bare, user bare: both re pinned", func(t *testing.T) {
 		svc, _, h, _, url := setupEnv(t)
-		h.entry(t, "claude", strings.TrimSuffix(url, "/mcp/o/acme/"+orgID)+"/mcp")
-		h.set(t, "claude.scope", "Project config (shared via .mcp.json)")
-		code, out, errs := runCmd(t, svc, "setup", "claude-code", "--apply", "--json=false")
-		if code != ExitRefused || len(h.calls()) != 1 || !strings.Contains(errs, ".mcp.json") {
+		project := t.TempDir()
+		h.claudeAt(t, "local", bareOf(url), project)
+		h.entry(t, "claude", bareOf(url))
+		code, out, errs := run(t, svc, project)
+		if code != ExitOK || h.url("claude") != url || h.slot("claude.local.url") != url {
+			t.Fatalf("exit %d %v\n%s\n%s", code, h.calls(), out, errs)
+		}
+		// Again: nothing left to change.
+		before := len(h.calls())
+		code, _, errs = run(t, svc, project)
+		if code != ExitOK || len(h.calls()) != before+2 {
+			t.Fatalf("a rerun must only look: exit %d %v %s", code, h.calls()[before:], errs)
+		}
+	})
+	t.Run("local pinned, user elsewhere: refused", func(t *testing.T) {
+		svc, _, h, _, url := setupEnv(t)
+		project := t.TempDir()
+		h.claudeAt(t, "local", url, project)
+		h.entry(t, "claude", "https://elsewhere.example/mcp")
+		code, out, errs := run(t, svc, project)
+		if code != ExitRefused || len(h.calls()) != 2 || !strings.Contains(errs, "elsewhere.example") {
 			t.Fatalf("exit %d %v\n%s\n%s", code, h.calls(), out, errs)
 		}
 	})
-	t.Run("project, pinned already", func(t *testing.T) {
+	t.Run("project bare, refused", func(t *testing.T) {
 		svc, _, h, _, url := setupEnv(t)
-		h.entry(t, "claude", url)
-		h.set(t, "claude.scope", "Project config (shared via .mcp.json)")
-		code, _, errs := runCmd(t, svc, "setup", "claude-code", "--apply", "--json=false")
-		if code != ExitOK || len(h.calls()) != 1 {
-			t.Fatalf("exit %d %v %s", code, h.calls(), errs)
+		project := t.TempDir()
+		h.claudeAt(t, "project", bareOf(url), project)
+		code, out, errs := run(t, svc, project)
+		if code != ExitRefused || !strings.Contains(errs, ".mcp.json") {
+			t.Fatalf("exit %d %v\n%s\n%s", code, h.calls(), out, errs)
+		}
+		for _, c := range h.calls() {
+			if !strings.HasPrefix(c, "claude mcp get") {
+				t.Fatalf("ran %q", c)
+			}
+		}
+	})
+	t.Run("project pinned, user bare: user re pinned", func(t *testing.T) {
+		svc, _, h, _, url := setupEnv(t)
+		project := t.TempDir()
+		h.claudeAt(t, "project", url, project)
+		h.entry(t, "claude", bareOf(url))
+		code, out, errs := run(t, svc, project)
+		if code != ExitOK || h.url("claude") != url || h.slot("claude.project.url") != url {
+			t.Fatalf("exit %d %v\n%s\n%s", code, h.calls(), out, errs)
+		}
+	})
+	t.Run("local only, pinned: nothing added for every project", func(t *testing.T) {
+		svc, _, h, _, url := setupEnv(t)
+		project := t.TempDir()
+		h.claudeAt(t, "local", url, project)
+		code, out, errs := run(t, svc, project)
+		if code != ExitOK || len(h.calls()) != 2 || h.url("claude") != "" {
+			t.Fatalf("exit %d %v\n%s\n%s", code, h.calls(), out, errs)
 		}
 	})
 }
