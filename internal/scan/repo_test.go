@@ -99,3 +99,28 @@ func TestOpenRepo(t *testing.T) {
 		t.Errorf("without git there is no repository to open")
 	}
 }
+
+func TestHeadBlob(t *testing.T) {
+	isolate(t)
+	ctx := context.Background()
+	repo := newRepo(t)
+	write(t, repo, "docs/a.md", "a\n")
+	write(t, repo, ":(glob)x.md", "x\n")
+	commitAll(t, repo, "a")
+	r, _ := OpenRepo(ctx, repo, Options{})
+	if f, err := r.ObjectFormat(ctx); err != nil || f != "sha1" {
+		t.Fatalf("ObjectFormat: %q %v", f, err)
+	}
+	want := strings.TrimSpace(gitIn(t, repo, "rev-parse", "HEAD:docs/a.md"))
+	if got, err := r.HeadBlob(ctx, "docs/a.md"); err != nil || got != want {
+		t.Errorf("HeadBlob = %q %v, want %q", got, err, want)
+	}
+	if got, err := r.HeadBlob(ctx, ":(glob)x.md"); err != nil || got == "" {
+		t.Errorf("a magic name is literal: %q %v", got, err)
+	}
+	for _, rel := range []string{"docs", "docs/b.md", "*.md"} {
+		if got, err := r.HeadBlob(ctx, rel); err != nil || got != "" {
+			t.Errorf("HeadBlob(%s) = %q %v, want none", rel, got, err)
+		}
+	}
+}

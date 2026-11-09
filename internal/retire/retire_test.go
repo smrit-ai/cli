@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/smrit-ai/cli/internal/plan"
+	"github.com/smrit-ai/cli/internal/scan"
 	"github.com/smrit-ai/cli/internal/state"
 )
 
@@ -87,13 +88,14 @@ const zipName = "smrit-import-2026-11-09.zip"
 // fixture is a finished import run over root, saved in its own state
 // directory.
 type fixture struct {
-	t     *testing.T
-	dir   string
-	root  string
-	run   *state.Run
-	n     int
-	zips  ZipStore
-	apply bool
+	t      *testing.T
+	dir    string
+	root   string
+	run    *state.Run
+	n      int
+	zips   ZipStore
+	rename Renamer
+	git    string
 }
 
 func newFixture(t *testing.T, root string) *fixture {
@@ -134,7 +136,7 @@ func (f *fixture) retire(apply bool) (Report, error) {
 	if err := state.SaveRun(f.dir, f.run); err != nil {
 		f.t.Fatal(err)
 	}
-	return Run(context.Background(), f.run.ID, Options{StateDir: f.dir, Apply: apply, Now: func() time.Time { return today }, Zips: f.zips})
+	return Run(context.Background(), f.run.ID, Options{StateDir: f.dir, Apply: apply, Now: func() time.Time { return today }, Zips: f.zips, Rename: f.rename, Scan: scan.Options{Git: f.git}})
 }
 
 func (f *fixture) mustRetire(apply bool) Report {
@@ -868,5 +870,429 @@ func TestSafePath(t *testing.T) {
 		if got := safePath(p); got != want {
 			t.Errorf("safePath(%q) = %v, want %v", p, got, want)
 		}
+	}
+}
+
+// git status can be told not to look: assume-unchanged, skip-worktree and
+// core.ignoreStat make an edited file read clean. Its bytes are compared
+// with the blob HEAD holds, so it is zipped, never deleted.
+func TestHiddenEditsAreZippedNotDeleted(t *testing.T) {
+	for name, hide := range map[string]func(t *testing.T, repo string){
+		"assume-unchanged": func(t *testing.T, repo string) {
+			gitIn(t, repo, "update-index", "--assume-unchanged", "a.md")
+		},
+		"skip-worktree": func(t *testing.T, repo string) {
+			gitIn(t, repo, "update-index", "--skip-worktree", "a.md")
+		},
+		"core.ignoreStat": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			isolate(t)
+			repo := newRepo(t)
+			if hide == nil {
+				gitIn(t, repo, "config", "core.ignoreStat", "true")
+			}
+			write(t, repo, "a.md", "committed\n")
+			commitAll(t, repo, "a")
+			if hide != nil {
+				hide(t, repo)
+			}
+			f := newFixture(t, repo)
+			f.done("a.md", "edited, never committed\n")
+			if s := statusOf(t, repo); s != "" {
+				t.Fatalf("the setup must hide the edit from status: %q", s)
+			}
+
+			rep := f.mustRetire(true)
+			if len(rep.Deleted) != 0 || !slices.Equal(rep.Zipped, []string{"a.md"}) || rep.Zip == nil {
+				t.Fatalf("an edit git status cannot see is zipped: %+v", rep)
+			}
+			if m := zipMembers(t, *rep.Zip); m["a.md"] != "edited, never committed\n" {
+				t.Errorf("zip: %v", m)
+			}
+		})
+	}
+}
+
+// editingZips runs edit when the zip is reopened for the read back: after
+// the zip holds the checked bytes, before anything is removed.
+type editingZips struct {
+	disk
+	edit func()
+}
+
+func (z editingZips) Open(root *os.Root, name string) (ZipReader, int64, error) {
+	z.edit()
+	return z.disk.Open(root, name)
+}
+
+// Each file is hashed again just before it is removed: an edit after the
+// zip was checked keeps its new bytes.
+func TestEditAfterReadBackIsLeft(t *testing.T) {
+	isolate(t)
+	repo := newRepo(t)
+	f := newFixture(t, repo)
+	f.done("clean.md", "clean\n")
+	commitAll(t, repo, "clean")
+	f.done("new.md", "new\n")
+	f.done("other.md", "other\n")
+	f.zips = editingZips{edit: func() {
+		write(t, repo, "clean.md", "clean, edited late\n")
+		write(t, repo, "new.md", "new, edited late\n")
+	}}
+
+	rep := f.mustRetire(true)
+	if !slices.Equal(rep.Zipped, []string{"other.md"}) || len(rep.Deleted) != 0 {
+		t.Fatalf("report: %+v", rep)
+	}
+	for p, body := range map[string]string{"clean.md": "clean, edited late\n", "new.md": "new, edited late\n"} {
+		if r := leftReason(rep, p); !strings.Contains(r, "changed") {
+			t.Errorf("%s: reason %q", p, r)
+		}
+		if content(t, filepath.Join(repo, p)) != body {
+			t.Errorf("%s lost its late edit", p)
+		}
+	}
+	if m := zipMembers(t, *rep.Zip); m["new.md"] != "new\n" {
+		t.Errorf("the zip keeps the checked copy: %v", m)
+	}
+	assertNoTemporaries(t, repo)
+}
+
+// assertNoTemporaries fails when retire left a temporary name behind.
+func assertNoTemporaries(t *testing.T, dir string) {
+	t.Helper()
+	filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && strings.Contains(d.Name(), "smrit-retire") {
+			t.Errorf("a temporary file is left: %s", p)
+		}
+		return nil
+	})
+}
+
+func writeTestZip(t *testing.T, p string, members map[string]string) {
+	t.Helper()
+	out, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(out)
+	names := make([]string, 0, len(members))
+	for n := range members {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		w, err := zw.Create(n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.WriteString(w, members[n])
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out.Close()
+}
+
+// The read back compares the member set with the files meant to be in it.
+func TestVerifyZipMemberSet(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	items := []item{{path: "a.md", sha: sum("a")}, {path: "b/c.md", sha: sum("c")}}
+	cases := map[string]map[string]string{
+		"exact":   {"a.md": "a", "b/c.md": "c"},
+		"extra":   {"a.md": "a", "b/c.md": "c", "x.md": "x"},
+		"missing": {"a.md": "a"},
+		"wrong":   {"a.md": "a", "b/c.md": "not c"},
+	}
+	for name, members := range cases {
+		writeTestZip(t, filepath.Join(dir, name+".zip"), members)
+		err := verifyZip(root, disk{}, name+".zip", items)
+		if (err == nil) != (name == "exact") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// A zip holding one member twice is refused too.
+func TestVerifyZipRefusesDuplicateMember(t *testing.T) {
+	dir := t.TempDir()
+	out, _ := os.Create(filepath.Join(dir, "d.zip"))
+	zw := zip.NewWriter(out)
+	for range 2 {
+		w, _ := zw.Create("a.md")
+		io.WriteString(w, "a")
+	}
+	zw.Close()
+	out.Close()
+	root, _ := os.OpenRoot(dir)
+	defer root.Close()
+	if err := verifyZip(root, disk{}, "d.zip", []item{{path: "a.md", sha: sum("a")}}); err == nil {
+		t.Error("a duplicate member passed")
+	}
+}
+
+// The exclude file and the info folder are never written through a
+// symbolic link.
+func TestExcludeNeverFollowsLinks(t *testing.T) {
+	outside := t.TempDir()
+	target := filepath.Join(outside, "target")
+	write(t, outside, "target", "untouched")
+
+	gitDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(gitDir, "info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(gitDir, "info", "exclude")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&excludePlan{file: link, line: "/x.zip"}).apply(); err == nil || content(t, target) != "untouched" {
+		t.Errorf("wrote through a linked exclude file: %v", err)
+	}
+	dangling := filepath.Join(outside, "created")
+	os.Remove(link)
+	if err := os.Symlink(dangling, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&excludePlan{file: link, line: "/x.zip"}).apply(); err == nil || exists(t, dangling) {
+		t.Errorf("created a file through a dangling link: %v", err)
+	}
+
+	linkedInfo := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(linkedInfo, "info")); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&excludePlan{file: filepath.Join(linkedInfo, "info", "exclude"), line: "/x.zip"}).apply(); err == nil || exists(t, filepath.Join(outside, "exclude")) {
+		t.Errorf("wrote into a linked info folder: %v", err)
+	}
+}
+
+// End to end: a linked exclude file stops retire before anything is removed.
+func TestLinkedExcludeStopsRetire(t *testing.T) {
+	for name, plant := range map[string]func(t *testing.T, gitDir, outside string){
+		"exclude file": func(t *testing.T, gitDir, outside string) {
+			os.Remove(filepath.Join(gitDir, "info", "exclude"))
+			if err := os.Symlink(filepath.Join(outside, "target"), filepath.Join(gitDir, "info", "exclude")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"info folder": func(t *testing.T, gitDir, outside string) {
+			if err := os.RemoveAll(filepath.Join(gitDir, "info")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(gitDir, "info")); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			isolate(t)
+			outside := t.TempDir()
+			write(t, outside, "target", "untouched")
+			repo := newRepo(t)
+			plant(t, filepath.Join(repo, ".git"), outside)
+			f := newFixture(t, repo)
+			f.done("new.md", "new\n")
+			_, err := f.retire(true)
+			var se *StoppedError
+			if !errors.As(err, &se) {
+				t.Fatalf("want a stop: %v", err)
+			}
+			if content(t, filepath.Join(outside, "target")) != "untouched" || exists(t, filepath.Join(outside, "exclude")) {
+				t.Error("wrote outside the repository")
+			}
+			if !exists(t, filepath.Join(repo, "new.md")) || len(zipsIn(t, repo)) != 0 {
+				t.Error("something was removed, or the zip stayed")
+			}
+		})
+	}
+}
+
+func TestExcludeWithoutTrailingNewline(t *testing.T) {
+	isolate(t)
+	repo := newRepo(t)
+	write(t, repo, ".git/info/exclude", "*.tmp")
+	f := newFixture(t, repo)
+	f.done("new.md", "new\n")
+	rep := f.mustRetire(true)
+	if !rep.ExcludeAdded {
+		t.Fatalf("report: %+v", rep)
+	}
+	if b := content(t, filepath.Join(repo, ".git/info/exclude")); b != "*.tmp\n/"+zipName+"\n" {
+		t.Errorf("exclude file: %q", b)
+	}
+}
+
+// renameHook is the real rename with an action just before or just after it.
+type renameHook struct {
+	before, after func(oldpath string)
+}
+
+func (h renameHook) Rename(oldpath, newpath string) error {
+	if h.before != nil {
+		h.before(oldpath)
+	}
+	err := os.Rename(oldpath, newpath)
+	if h.after != nil {
+		h.after(oldpath)
+	}
+	return err
+}
+
+// A file is moved aside, hashed where it now is, and only then unlinked: an
+// edit landing between the last check and the removal is kept.
+func TestRemovalRace(t *testing.T) {
+	t.Run("edited before the move", func(t *testing.T) {
+		isolate(t)
+		root := realPath(t, t.TempDir())
+		f := newFixture(t, root)
+		f.done("a.md", "as imported\n")
+		f.rename = renameHook{before: func(old string) {
+			if filepath.Base(old) == "a.md" {
+				write(t, root, "a.md", "edited at the last moment\n")
+			}
+		}}
+		rep := f.mustRetire(true)
+		if r := leftReason(rep, "a.md"); !strings.Contains(r, "changed") || len(rep.Zipped) != 0 {
+			t.Fatalf("report: %+v", rep)
+		}
+		if content(t, filepath.Join(root, "a.md")) != "edited at the last moment\n" {
+			t.Error("the late edit was lost")
+		}
+		assertNoTemporaries(t, root)
+	})
+	t.Run("new file after the move", func(t *testing.T) {
+		isolate(t)
+		root := realPath(t, t.TempDir())
+		f := newFixture(t, root)
+		f.done("a.md", "as imported\n")
+		f.rename = renameHook{after: func(old string) {
+			if filepath.Base(old) == "a.md" {
+				write(t, root, "a.md", "saved again\n")
+			}
+		}}
+		rep := f.mustRetire(true)
+		if !slices.Equal(rep.Zipped, []string{"a.md"}) {
+			t.Fatalf("report: %+v", rep)
+		}
+		if content(t, filepath.Join(root, "a.md")) != "saved again\n" {
+			t.Error("the file saved after the move was touched")
+		}
+		assertNoTemporaries(t, root)
+	})
+}
+
+// When git cannot say whether the zip's name is tracked, apply stops, and
+// the preview says it would stop rather than promising a zip it has no
+// name for.
+func TestZipNameUnknownStopsPreviewAndApply(t *testing.T) {
+	isolate(t)
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\ncase \"$*\" in *smrit-import-*) exit 128;; esac\nexec '" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repo := newRepo(t)
+	f := newFixture(t, repo)
+	f.done("new.md", "new\n")
+	f.git = wrapper
+
+	for _, apply := range []bool{false, true} {
+		rep, err := f.retire(apply)
+		var se *StoppedError
+		if !errors.As(err, &se) {
+			t.Fatalf("apply %v: want a stop, got %v (%+v)", apply, err, rep)
+		}
+		if rep.Zip != nil || len(rep.Zipped) != 0 || !strings.Contains(leftReason(rep, "new.md"), "stop") {
+			t.Errorf("apply %v: report %+v", apply, rep)
+		}
+		if !exists(t, filepath.Join(repo, "new.md")) || len(zipsIn(t, repo)) != 0 {
+			t.Errorf("apply %v: something changed", apply)
+		}
+	}
+}
+
+func TestDuplicatePlanEntries(t *testing.T) {
+	isolate(t)
+	root := realPath(t, t.TempDir())
+	f := newFixture(t, root)
+	f.done("a.md", "a\n")
+	f.run.Plan.Entries = append(f.run.Plan.Entries, f.run.Plan.Entries[0])
+	rep := f.mustRetire(true)
+	if !slices.Equal(rep.Zipped, []string{"a.md"}) || len(rep.Left) != 0 {
+		t.Fatalf("report: %+v", rep)
+	}
+	if m := zipMembers(t, *rep.Zip); len(m) != 1 {
+		t.Errorf("zip: %v", m)
+	}
+}
+
+// HEAD is asked again at removal: a commit landing after the check that
+// takes these bytes out of HEAD leaves the file.
+func TestHeadMovedBeforeRemovalIsLeft(t *testing.T) {
+	isolate(t)
+	repo := newRepo(t)
+	f := newFixture(t, repo)
+	f.done("a.md", "a\n")
+	commitAll(t, repo, "a")
+	f.rename = renameHook{before: func(old string) {
+		if filepath.Base(old) == "a.md" {
+			write(t, repo, "a.md", "b\n")
+			commitAll(t, repo, "b")
+			write(t, repo, "a.md", "a\n")
+		}
+	}}
+	rep := f.mustRetire(true)
+	if r := leftReason(rep, "a.md"); !strings.Contains(r, "changed") || len(rep.Deleted) != 0 {
+		t.Fatalf("report: %+v", rep)
+	}
+	if content(t, filepath.Join(repo, "a.md")) != "a\n" {
+		t.Error("the file was not put back")
+	}
+	assertNoTemporaries(t, repo)
+}
+
+// A file that changed is put back, but never over a file that took its
+// name meanwhile: then it stays under the temporary name, and the report
+// says where.
+func TestPutBackNeverReplaces(t *testing.T) {
+	isolate(t)
+	root := realPath(t, t.TempDir())
+	f := newFixture(t, root)
+	f.done("a.md", "as imported\n")
+	f.rename = renameHook{
+		before: func(old string) {
+			if filepath.Base(old) == "a.md" {
+				write(t, root, "a.md", "edited\n")
+			}
+		},
+		after: func(old string) {
+			if filepath.Base(old) == "a.md" {
+				write(t, root, "a.md", "saved again\n")
+			}
+		},
+	}
+	rep := f.mustRetire(true)
+	r := leftReason(rep, "a.md")
+	if !strings.Contains(r, "kept as .smrit-retire-") {
+		t.Fatalf("report: %+v", rep)
+	}
+	if content(t, filepath.Join(root, "a.md")) != "saved again\n" {
+		t.Error("the new file was replaced")
+	}
+	kept := strings.Fields(strings.TrimPrefix(r[strings.Index(r, "kept as ")+len("kept as "):], ""))[0]
+	kept = strings.TrimSuffix(kept, ",")
+	if content(t, filepath.Join(root, kept)) != "edited\n" {
+		t.Errorf("the edited bytes are not at %s", kept)
 	}
 }

@@ -198,3 +198,18 @@ func verifyZip(root *os.Root, zs ZipStore, name string, items []item) error {
 	}
 	return nil
 }
+
+// firstFree is the first zip name for day that is not taken. It reads only.
+func firstFree(day time.Time, taken func(name string) (bool, error)) (string, error) {
+	for n := 1; n <= maxSuffix; n++ {
+		name := zipNameFor(day, n)
+		t, err := taken(name)
+		if err != nil {
+			return "", err
+		}
+		if !t {
+			return name, nil
+		}
+	}
+	return "", errors.New("the folder already holds too many zips from today")
+}

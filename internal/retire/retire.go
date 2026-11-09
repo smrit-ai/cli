@@ -10,11 +10,8 @@ package retire
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -42,7 +39,19 @@ type Options struct {
 	Scan scan.Options
 	// Zips is where the zip is written and read back; nil is the disk.
 	Zips ZipStore
+	// Rename moves a file aside before it is removed; nil is os.Rename.
+	Rename Renamer
 }
+
+// Renamer renames a file by absolute path. The real one is os.Rename; a test
+// wraps it to act between retire's steps.
+type Renamer interface {
+	Rename(oldpath, newpath string) error
+}
+
+type osRename struct{}
+
+func (osRename) Rename(oldpath, newpath string) error { return os.Rename(oldpath, newpath) }
 
 // Left is a file retire did not remove, and why.
 type Left struct {
@@ -103,6 +112,7 @@ const (
 	reasonGitUnknown = "its git state is unknown"
 	reasonDuring     = "it changed while retire ran"
 	reasonStopped    = "retire stopped before removing it"
+	reasonWouldStop  = "retire would stop before removing it"
 )
 
 // item is a file retire will remove.
@@ -111,6 +121,10 @@ type item struct {
 	sha  string
 	// unpushed is a clean file whose last commit is on no upstream.
 	unpushed bool
+	// top is a clean file's repository; repoRel its path there, and
+	// format the repository's object format, once its bytes are known to
+	// be HEAD's blob.
+	top, repoRel, format string
 }
 
 // Run retires run id. Without o.Apply it only reads.
@@ -164,6 +178,15 @@ func Run(ctx context.Context, id string, o Options) (Report, error) {
 	}
 	defer root.Close()
 
+	// git status alone does not prove a file identical to HEAD: an
+	// assume-unchanged or skip-worktree bit, or core.ignoreStat, hides an
+	// edit from it. A clean file is deleted only when its bytes are the
+	// blob HEAD holds; any other goes into the zip.
+	heads := &gitHeads{ctx: ctx, opts: o.Scan, repos: map[string]*headRepo{}}
+	var moved []item
+	delItems, moved = confirmClean(root, rootPath, heads, delItems, &rep)
+	zipItems = append(zipItems, moved...)
+
 	now := time.Now
 	if o.Now != nil {
 		now = o.Now
@@ -201,6 +224,28 @@ func Run(ctx context.Context, id string, o Options) (Report, error) {
 	}
 
 	if !o.Apply {
+		if len(zipItems) > 0 {
+			name, err := firstFree(day, taken)
+			if err != nil {
+				// apply would stop here, before writing anything.
+				for _, it := range zipItems {
+					rep.Left = append(rep.Left, Left{it.path, reasonWouldStop})
+				}
+				for _, it := range delItems {
+					rep.Left = append(rep.Left, Left{it.path, reasonWouldStop})
+				}
+				return rep, &StoppedError{fmt.Sprintf("The zip's name could not be checked (%v), so retire would stop before removing anything. Nothing was changed.", err)}
+			}
+			zp := filepath.Join(rootPath, name)
+			rep.Zip = &zp
+			if repo != nil {
+				if rel, ok := repoRel(repo, rootPath, name); ok {
+					if ex, err := planExclude(ctx, repo, rel); err == nil && ex != nil {
+						rep.ExcludeAdded = true
+					}
+				}
+			}
+		}
 		for _, it := range delItems {
 			rep.Deleted = append(rep.Deleted, it.path)
 			if it.unpushed {
@@ -209,26 +254,6 @@ func Run(ctx context.Context, id string, o Options) (Report, error) {
 		}
 		for _, it := range zipItems {
 			rep.Zipped = append(rep.Zipped, it.path)
-		}
-		if len(zipItems) > 0 {
-			for n := 1; n <= maxSuffix; n++ {
-				name := zipNameFor(day, n)
-				if t, err := taken(name); err != nil {
-					break
-				} else if t {
-					continue
-				}
-				zp := filepath.Join(rootPath, name)
-				rep.Zip = &zp
-				if repo != nil {
-					if rel, ok := repoRel(repo, rootPath, name); ok {
-						if ex, err := planExclude(ctx, repo, rel); err == nil && ex != nil {
-							rep.ExcludeAdded = true
-						}
-					}
-				}
-				break
-			}
 		}
 		return rep, nil
 	}
@@ -279,19 +304,22 @@ func Run(ctx context.Context, id string, o Options) (Report, error) {
 	for _, it := range delItems {
 		order = append(order, removal{it, false})
 	}
+	rm := &remover{root: root, rootPath: rootPath, rename: o.Rename, heads: heads}
+	if rm.rename == nil {
+		rm.rename = osRename{}
+	}
 	for i, r := range order {
 		copyNote := ""
 		if r.zipped {
 			copyNote = "; a copy is in the zip"
 		}
-		// Read again just before removal: a file changed since it was
-		// checked (or zipped) keeps its new bytes.
-		if !unchanged(root, r.it) {
-			rep.Left = append(rep.Left, Left{r.it.path, reasonDuring + copyNote})
+		removed, left, stop := rm.remove(r.it)
+		if !removed && !stop {
+			rep.Left = append(rep.Left, Left{r.it.path, left + copyNote})
 			continue
 		}
-		if err := root.Remove(filepath.FromSlash(r.it.path)); err != nil {
-			rep.Left = append(rep.Left, Left{r.it.path, "it could not be removed" + copyNote})
+		if stop {
+			rep.Left = append(rep.Left, Left{r.it.path, left + copyNote})
 			for _, rest := range order[i+1:] {
 				note := ""
 				if rest.zipped {
@@ -390,6 +418,7 @@ func classify(run *state.Run, res scan.Result, rep *Report) (zipItems, delItems 
 				continue
 			}
 			it.unpushed = f.Git.Pushed == nil || !*f.Git.Pushed
+			it.top = f.Git.Repo
 			delItems = append(delItems, it)
 		case scan.StateModified, scan.StateUntracked, scan.StateIgnored:
 			zipItems = append(zipItems, it)
@@ -458,21 +487,6 @@ func openRegular(root *os.Root, rel string) (*os.File, os.FileInfo, error) {
 		return nil, nil, errors.New("not a regular file")
 	}
 	return f, st, nil
-}
-
-// unchanged reports whether the file at it.path is still a regular file
-// whose bytes hash to it.sha.
-func unchanged(root *os.Root, it item) bool {
-	f, _, err := openRegular(root, it.path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return false
-	}
-	return hex.EncodeToString(h.Sum(nil)) == it.sha
 }
 
 // repoRel is name, a file in the folder, relative to the repository's top
