@@ -95,6 +95,9 @@ type linkScanner struct {
 type rawLink struct {
 	text, target string
 	image        bool
+	// start and end are where the target sits in the body, as written:
+	// inside the angle brackets when it has them.
+	start, end int
 }
 
 // maxDestinationParens bounds the nesting of parentheses in a link
@@ -222,6 +225,7 @@ func (s *linkScanner) link(open, to int) (rawLink, int, bool) {
 	text := b[open+1 : closeAt]
 	i := s.skipSpace(closeAt+2, to)
 	var target string
+	var tStart, tEnd int
 	if i < to && b[i] == '<' {
 		j := i + 1
 		for j < to && b[j] != '<' && b[j] != '>' && b[j] != '\n' {
@@ -232,6 +236,7 @@ func (s *linkScanner) link(open, to int) (rawLink, int, bool) {
 			return rawLink{}, 0, false
 		}
 		target = b[i+1 : j]
+		tStart, tEnd = i+1, j
 		i = j + 1
 	} else {
 		start, parens := i, 0
@@ -258,6 +263,7 @@ func (s *linkScanner) link(open, to int) (rawLink, int, bool) {
 			i++
 		}
 		target = b[start:i]
+		tStart, tEnd = start, i
 	}
 	i = s.skipSpace(i, to)
 	if i < to && (b[i] == '"' || b[i] == '\'' || b[i] == '(') {
@@ -283,7 +289,7 @@ func (s *linkScanner) link(open, to int) (rawLink, int, bool) {
 	if i >= to || b[i] != ')' {
 		return rawLink{}, 0, false
 	}
-	return rawLink{text: text, target: unescape(target)}, i + 1, true
+	return rawLink{text: text, target: unescape(target), start: tStart, end: tEnd}, i + 1, true
 }
 
 // nextAt is the first position at or after from holding c, or -1, found by
@@ -344,8 +350,38 @@ func parseLinks(body, rel string) []Link {
 	return l
 }
 
+// LinkSpan is a link with the byte range its target occupies in the body,
+// as written, so a caller can replace the target in place.
+type LinkSpan struct {
+	Link
+	Start, End int
+}
+
+// LinkSpans returns the links parseLinks finds in body, in the same order,
+// each with where its target sits. A fenced block or a code span holds none,
+// so a rewrite by these ranges never touches code. A link inside an image's
+// text comes after the link holding it, and no two spans overlap.
+func LinkSpans(body, rel string) []LinkSpan {
+	raw, _ := rawLinks(body)
+	out := make([]LinkSpan, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, LinkSpan{Link: resolveLink(r, rel), Start: r.start, End: r.end})
+	}
+	return out
+}
+
 // parseLinksCounting is parseLinks, also returning how many steps it took.
 func parseLinksCounting(body, rel string) ([]Link, int) {
+	raw, work := rawLinks(body)
+	links := make([]Link, 0, len(raw))
+	for _, r := range raw {
+		links = append(links, resolveLink(r, rel))
+	}
+	return links, work
+}
+
+// rawLinks finds the links in body as written, and how many steps it took.
+func rawLinks(body string) ([]rawLink, int) {
 	s := &linkScanner{body: body, codeEnd: map[int]int{}, closeOf: map[int]int{}, at: map[byte][]int{}}
 	for i := 0; i < len(body); i++ {
 		s.work++
@@ -362,11 +398,7 @@ func parseLinksCounting(body, rel string) ([]Link, int) {
 		}
 		from = f[1]
 	}
-	links := make([]Link, 0, len(raw))
-	for _, r := range raw {
-		links = append(links, resolveLink(r, rel))
-	}
-	return links, s.work
+	return raw, s.work
 }
 
 func resolveLink(r rawLink, rel string) Link {

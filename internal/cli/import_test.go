@@ -1,21 +1,30 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/smrit-ai/cli/internal/state"
 )
 
 type importFake struct {
 	mu      sync.Mutex
 	paths   []string
 	preview int // status for the preview route; 0 is 200
+	// badHash makes a commit answer a received hash that is not the sent one.
+	badHash bool
+	tools   []string
 }
 
 func newImportFake(t *testing.T) (*importFake, *httptest.Server) {
@@ -32,16 +41,35 @@ func newImportFake(t *testing.T) (*importFake, *httptest.Server) {
 				io.WriteString(w, `{"error":"upgrade","detail":"too old"}`)
 				return
 			}
+			if strings.HasSuffix(r.URL.Path, "/import") {
+				h := sha256.Sum256([]byte("# A\n"))
+				got := hex.EncodeToString(h[:])
+				if f.badHash {
+					got = strings.Repeat("0", 64)
+				}
+				io.WriteString(w, `{"items":[{"relative_path":"a.md","status":"created","document_id":"DocAAAAAAAAAAAAAAAAAA","received_sha256":"`+got+`"}]}`)
+				return
+			}
 			io.WriteString(w, `{"items":[{"relative_path":"a.md","action":"create","slug":"a","type":"decision","title":"A"},{"relative_path":"b.md","action":"rejected","reason":"The file is empty."}]}`)
 			return
 		}
 		var m struct {
 			Method string `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
 		}
 		json.Unmarshal(b, &m)
 		w.Header().Set("Content-Type", "application/json")
 		if m.Method == "tools/list" {
 			io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"spaces"},{"name":"create_object"}]}}`)
+			return
+		}
+		f.mu.Lock()
+		f.tools = append(f.tools, m.Params.Name)
+		f.mu.Unlock()
+		if m.Params.Name == "create_document" {
+			io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"document_id\":\"MapIdMMMMMMMMMMMMMMMM\",\"revision\":1}"}]}}`)
 			return
 		}
 		out, _ := json.Marshal(`{"org":{"id":"` + orgID + `","name":"Acme","slug":"acme"},"spaces":[{"id":"S1","slug":"engineering","name":"E","visibility":"private"}],"types":["decision"]}`)
@@ -132,13 +160,122 @@ func TestImportRouteRefusalExits1WithItsSentence(t *testing.T) {
 	}
 }
 
-func TestImportWithoutDryRunSaysLaterAndExits2(t *testing.T) {
+func TestImportRunsTextNamesOrgFirstAndExits1OnRefusal(t *testing.T) {
 	f, srv := newImportFake(t)
 	svc := setup(t, srv, prof("acme", orgID))
 	plan := writePlan(t, twoDocs, map[string]string{"a.md": "# A\n", "b.md": "# B\n"})
+	code, out, errs := runCmd(t, svc, "--json=false", "import", plan)
+	if code != ExitPartial {
+		t.Fatalf("exit %d: %s %s", code, out, errs)
+	}
+	run := regexp.MustCompile(`[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}`).FindString(errs)
+	if !strings.HasPrefix(errs, "Importing into Acme (acme) as run "+run) || run == "" {
+		t.Fatalf("stderr %q", errs)
+	}
+	for _, want := range []string{"Run: " + run, "a.md  document  created  DocAAAAAAAAAAAAAAAAAA", "b.md  document  refused: The file is empty.",
+		"Import map: MapIdMMMMMMMMMMMMMMMM", "1 created, 0 updated, 0 unchanged, 0 failed, 1 refused, 0 skipped."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if !strings.HasPrefix(out, "Organization: Acme (acme)\n") {
+		t.Fatalf("%s", out)
+	}
+	if strings.Contains(out+errs, fakeToken) {
+		t.Fatal("token in output")
+	}
+	if !slices.Contains(f.paths, "/cli/v1/spaces/engineering/import") || !slices.Contains(f.tools, "create_document") {
+		t.Fatalf("%v %v", f.paths, f.tools)
+	}
+}
+
+func TestImportRunJSONReport(t *testing.T) {
+	_, srv := newImportFake(t)
+	svc := setup(t, srv, prof("acme", orgID))
+	plan := writePlan(t, `[{"path":"a.md","kind":"document","space":"engineering","type":"decision"}]`, map[string]string{"a.md": "# A\n"})
 	code, out, errs := runCmd(t, svc, "import", plan)
-	if code != ExitUsage || out != "" || !strings.Contains(errs, "later version") || len(f.paths) != 0 {
-		t.Fatalf("exit %d %q %q %v", code, out, errs, f.paths)
+	if code != ExitOK {
+		t.Fatalf("exit %d: %s %s", code, out, errs)
+	}
+	var rep map[string]any
+	if err := json.Unmarshal([]byte(out), &rep); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out, `{"organization":`) || rep["map"] != "MapIdMMMMMMMMMMMMMMMM" || rep["created"] != float64(1) {
+		t.Fatalf("%s", out)
+	}
+	for _, k := range []string{"run", "map", "map_error", "links", "entries", "failed", "refused", "skipped"} {
+		if _, ok := rep[k]; !ok {
+			t.Errorf("report lacks %s", k)
+		}
+	}
+	e := rep["entries"].([]any)[0].(map[string]any)
+	for _, k := range []string{"path", "status", "id", "error"} {
+		if _, ok := e[k]; !ok {
+			t.Errorf("entry lacks %s", k)
+		}
+	}
+	if e["status"] != "created" || e["id"] != "DocAAAAAAAAAAAAAAAAAA" {
+		t.Fatalf("%v", e)
+	}
+	dir, _ := state.Dir()
+	if _, err := os.Stat(filepath.Join(dir, "runs", rep["run"].(string)+".json")); err != nil {
+		t.Fatalf("no run state: %v", err)
+	}
+}
+
+func TestImportRunFailedEntryExits1(t *testing.T) {
+	f, srv := newImportFake(t)
+	f.badHash = true
+	svc := setup(t, srv, prof("acme", orgID))
+	plan := writePlan(t, `[{"path":"a.md","kind":"document","space":"engineering","type":"decision"}]`, map[string]string{"a.md": "# A\n"})
+	code, out, _ := runCmd(t, svc, "import", plan)
+	if code != ExitPartial || !strings.Contains(out, "The bytes Smrit received differ from the bytes sent.") {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+}
+
+func TestImportRunEveryEntryRefusedExits4(t *testing.T) {
+	f, srv := newImportFake(t)
+	svc := setup(t, srv, prof("acme", orgID))
+	plan := writePlan(t, `[{"path":"a.md","kind":"document","space":"nowhere","type":"decision"}]`, map[string]string{"a.md": "# A\n"})
+	code, out, _ := runCmd(t, svc, "import", plan)
+	if code != ExitRefused || !strings.Contains(out, `"refused":1`) {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	for _, p := range f.paths {
+		if strings.HasPrefix(p, "/cli/v1/") {
+			t.Fatalf("sent %v", f.paths)
+		}
+	}
+}
+
+func TestImportRunUpgradeExits6AndNamesTheRun(t *testing.T) {
+	f, srv := newImportFake(t)
+	f.preview = 426
+	svc := setup(t, srv, prof("acme", orgID))
+	plan := writePlan(t, `[{"path":"a.md","kind":"document","space":"engineering","type":"decision"}]`, map[string]string{"a.md": "# A\n"})
+	code, _, errs := runCmd(t, svc, "import", plan)
+	if code != ExitUpgrade || !strings.Contains(errs, "Upgrade smrit") || !strings.Contains(errs, "--resume") {
+		t.Fatalf("exit %d: %s", code, errs)
+	}
+}
+
+func TestImportResumeUsage(t *testing.T) {
+	f, srv := newImportFake(t)
+	svc := setup(t, srv, prof("acme", orgID))
+	plan := writePlan(t, twoDocs, map[string]string{"a.md": "# A\n", "b.md": "# B\n"})
+	if code, _, errs := runCmd(t, svc, "import", plan, "--dry-run", "--resume", "20261109T143005Z-a1b2c3"); code != ExitUsage || !strings.Contains(errs, "--dry-run") {
+		t.Fatalf("both: %d %s", code, errs)
+	}
+	code, _, errs := runCmd(t, svc, "import", plan, "--resume", "../../x")
+	if code != ExitUsage || !strings.Contains(errs, "No import run") {
+		t.Fatalf("bad id: %d %s", code, errs)
+	}
+	for _, p := range f.paths {
+		if strings.HasPrefix(p, "/cli/v1/") {
+			t.Fatalf("sent %v", f.paths)
+		}
 	}
 }
 

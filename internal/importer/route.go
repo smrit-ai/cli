@@ -1,6 +1,6 @@
-// Package importer talks to the CLI door's import routes and previews a plan
-// against them. Nothing here writes except Route.Commit, which the dry run
-// never reaches.
+// Package importer talks to the CLI door's import routes. DryRun previews a
+// plan and never reaches Route.Commit; Run imports it, keeping a run state
+// it can be resumed from.
 package importer
 
 import (

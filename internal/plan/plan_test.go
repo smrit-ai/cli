@@ -2,6 +2,8 @@ package plan
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,5 +174,17 @@ func TestTruncatedScanSaysTheFolderHasMoreFiles(t *testing.T) {
 	_, bad := Validate(context.Background(), Plan{Root: "/r", Entries: []PlanEntry{e}}, res, spaces, true)
 	if len(bad) != 1 || !strings.Contains(bad[0].Reason, "more than 5000 files") || strings.Contains(bad[0].Reason, "not in the folder") {
 		t.Fatalf("%+v", bad)
+	}
+}
+
+func TestLoadHashedIsTheFileBytesHash(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "plan.json")
+	body := `{"version":1,"root":"docs","entries":[{"path":"a.md","kind":"document"}]}`
+	os.WriteFile(file, []byte(body), 0o644)
+	_, h, err := LoadHashed(file)
+	sum := sha256.Sum256([]byte(body))
+	if err != nil || h != hex.EncodeToString(sum[:]) {
+		t.Fatalf("%q %v", h, err)
 	}
 }

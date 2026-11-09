@@ -4,6 +4,8 @@ package plan
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,40 +50,48 @@ type Plan struct {
 // Load reads and parses a plan file. A relative root is taken from the
 // plan's own folder.
 func Load(file string) (Plan, error) {
+	p, _, err := LoadHashed(file)
+	return p, err
+}
+
+// LoadHashed is Load, also returning the SHA-256 of the bytes it parsed, so
+// a run can tell later whether the plan file is still the same.
+func LoadHashed(file string) (Plan, string, error) {
 	var p Plan
 	f, err := os.Open(file)
 	if err != nil {
-		return p, fmt.Errorf("The plan %s could not be read.", file)
+		return p, "", fmt.Errorf("The plan %s could not be read.", file)
 	}
 	defer f.Close()
 	raw, err := io.ReadAll(io.LimitReader(f, maxPlanBytes+1))
 	if err != nil || len(raw) > maxPlanBytes {
-		return p, fmt.Errorf("The plan %s could not be read.", file)
+		return p, "", fmt.Errorf("The plan %s could not be read.", file)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&p); err != nil {
-		return Plan{}, errors.New("The plan is not valid JSON in the plan format. Check it against the scan guide.")
+		return Plan{}, "", errors.New("The plan is not valid JSON in the plan format. Check it against the scan guide.")
 	}
 	if dec.More() {
-		return Plan{}, errors.New("The plan holds more than one JSON value.")
+		return Plan{}, "", errors.New("The plan holds more than one JSON value.")
 	}
 	if p.Version != Version {
-		return Plan{}, fmt.Errorf("The plan is version %d and this smrit reads version %d.", p.Version, Version)
+		return Plan{}, "", fmt.Errorf("The plan is version %d and this smrit reads version %d.", p.Version, Version)
 	}
 	if p.Root == "" {
-		return Plan{}, errors.New("The plan names no root folder.")
+		return Plan{}, "", errors.New("The plan names no root folder.")
 	}
 	if len(p.Entries) == 0 {
-		return Plan{}, errors.New("The plan has no entries.")
+		return Plan{}, "", errors.New("The plan has no entries.")
 	}
 	if !filepath.IsAbs(p.Root) {
 		abs, err := filepath.Abs(file)
 		if err != nil {
-			return Plan{}, fmt.Errorf("The plan %s could not be read.", file)
+			return Plan{}, "", fmt.Errorf("The plan %s could not be read.", file)
 		}
 		p.Root = filepath.Join(filepath.Dir(abs), p.Root)
 	}
 	p.Root = filepath.Clean(p.Root)
-	return p, nil
+	sum := sha256.Sum256(raw)
+	return p, hex.EncodeToString(sum[:]), nil
 }

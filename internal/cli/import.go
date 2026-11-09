@@ -9,6 +9,7 @@ import (
 	"github.com/smrit-ai/cli/internal/importer"
 	"github.com/smrit-ai/cli/internal/plan"
 	"github.com/smrit-ai/cli/internal/scan"
+	"github.com/smrit-ai/cli/internal/state"
 )
 
 // importOutput is a dry run's report, as JSON or as text naming the
@@ -40,50 +41,127 @@ func (o importOutput) String() string {
 	return b.String()
 }
 
+// runOutput is a real run's report, as JSON or as text naming the
+// organization first.
+type runOutput struct{ importer.RunReport }
+
+func (o runOutput) String() string {
+	var b strings.Builder
+	org := o.Organization
+	fmt.Fprintf(&b, "Organization: %s (%s)\n", printable(org.Name), printable(org.Slug))
+	fmt.Fprintf(&b, "Run: %s\n", o.Run)
+	for _, e := range o.Entries {
+		line := fmt.Sprintf("%s  %s  %s", printable(e.Path), e.Kind, e.Status)
+		if e.ID != "" {
+			line += "  " + printable(e.ID)
+		}
+		if e.Error != "" {
+			line += ": " + printable(e.Error)
+		}
+		b.WriteString(line + "\n")
+	}
+	for _, l := range o.Links {
+		fmt.Fprintf(&b, "  link in %s to %s: %s\n", printable(l.Path), printable(l.Target), printable(l.Reason))
+	}
+	if o.Map != "" {
+		fmt.Fprintf(&b, "Import map: %s\n", printable(o.Map))
+	}
+	if o.MapError != "" {
+		fmt.Fprintf(&b, "Import map: %s\n", printable(o.MapError))
+	}
+	fmt.Fprintf(&b, "%d created, %d updated, %d unchanged, %d failed, %d refused, %d skipped.",
+		o.Created, o.Updated, o.Unchanged, o.Failed, o.Refused, o.Skipped)
+	return b.String()
+}
+
+const importUsage = "Usage: smrit import <plan> [--dry-run | --resume <run>]"
+
 func importCommand(s *Services) Command {
 	return Command{
 		Name:    "import",
-		Summary: "Check an import plan and preview it without writing anything: smrit import <plan> --dry-run.",
+		Summary: "Import a plan into Smrit, or preview it with --dry-run, which writes nothing.",
 		Flags: []Flag{
 			orgFlag,
 			{Name: "dry-run", Usage: "Preview what the plan would do. Nothing is written.", Bool: true},
+			{Name: "resume", Usage: "Carry on the run with this id, skipping what it already imported."},
 		},
 		Run: func(ctx context.Context, env *Env, args []string) int {
 			if len(args) != 1 {
-				return usageError(env.Stderr, "Usage: smrit import <plan> --dry-run")
+				return usageError(env.Stderr, importUsage)
 			}
-			if env.Flags["dry-run"] != "true" {
-				return usageError(env.Stderr, "Importing for real comes in a later version. Run smrit import <plan> --dry-run to preview.")
+			dry, resume := env.Flags["dry-run"] == "true", env.Flags["resume"]
+			if dry && resume != "" {
+				return usageError(env.Stderr, "A dry run writes nothing, so it has no run to resume. Use --dry-run or --resume, not both.")
 			}
-			p, err := plan.Load(args[0])
+			p, planHash, err := plan.LoadHashed(args[0])
 			if err != nil {
 				return usageError(env.Stderr, "%v", err)
+			}
+			if resume != "" {
+				if dir, err := state.Dir(); err == nil && state.RunPath(dir, resume) == "" {
+					return usageError(env.Stderr, "No import run has that id. The id is printed when a run begins.")
+				}
 			}
 			c, code := s.client(env)
 			if c == nil {
 				return code
 			}
-			rep, err := importer.DryRun(ctx, importer.Input{Plan: p, MCP: c, Route: &importer.Route{MCP: c}})
-			if err != nil {
-				var re *scan.RefusedError
-				var ue *scan.UsageError
-				switch {
-				case errors.As(err, &re):
-					fmt.Fprintln(env.Stderr, re.Error())
-					return ExitRefused
-				case errors.As(err, &ue):
-					return usageError(env.Stderr, "%s", ue.Error())
+			if dry {
+				rep, err := importer.DryRun(ctx, importer.Input{Plan: p, MCP: c, Route: &importer.Route{MCP: c}})
+				if err != nil {
+					return importError(env, err)
 				}
+				env.Result(importOutput{rep})
+				return refusedExit(rep.Refused, 0, len(rep.Entries))
+			}
+			dir, err := state.Ensure()
+			if err != nil {
 				return report(env, err)
 			}
-			env.Result(importOutput{rep})
-			if rep.Refused > 0 {
-				if rep.Refused == len(rep.Entries) {
-					return ExitRefused
+			rep, err := importer.Run(ctx, p, importer.RunOptions{
+				MCP: c, Route: &importer.Route{MCP: c}, StateDir: dir, PlanSHA256: planHash, Resume: resume,
+				Began: func(org importer.Org, run string) {
+					fmt.Fprintf(env.Stderr, "Importing into %s (%s) as run %s.\n", printable(org.Name), printable(org.Slug), run)
+				},
+			})
+			if err != nil {
+				code := importError(env, err)
+				if rep.Run != "" {
+					fmt.Fprintf(env.Stderr, "The run %s stopped. To carry on, run smrit import %s --resume %s\n", rep.Run, printable(args[0]), rep.Run)
 				}
-				return ExitPartial
+				return code
 			}
-			return ExitOK
+			env.Result(runOutput{rep})
+			return refusedExit(rep.Refused, rep.Failed+rep.Skipped, len(rep.Entries))
 		},
 	}
+}
+
+// importError reports an error from a dry run or a run with its exit code.
+func importError(env *Env, err error) int {
+	var re *scan.RefusedError
+	var ue *scan.UsageError
+	var se *importer.ResumeError
+	switch {
+	case errors.As(err, &re):
+		fmt.Fprintln(env.Stderr, re.Error())
+		return ExitRefused
+	case errors.As(err, &ue):
+		return usageError(env.Stderr, "%s", ue.Error())
+	case errors.As(err, &se):
+		return usageError(env.Stderr, "%s", se.Error())
+	}
+	return report(env, err)
+}
+
+// refusedExit is 4 when every entry was refused, 1 when some were refused or
+// not done, and 0 when every entry was.
+func refusedExit(refused, notDone, entries int) int {
+	switch {
+	case refused > 0 && refused == entries:
+		return ExitRefused
+	case refused > 0 || notDone > 0:
+		return ExitPartial
+	}
+	return ExitOK
 }

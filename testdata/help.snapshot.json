@@ -47,7 +47,7 @@
     },
     {
       "name": "import",
-      "summary": "Check an import plan and preview it without writing anything: smrit import <plan> --dry-run.",
+      "summary": "Import a plan into Smrit, or preview it with --dry-run, which writes nothing.",
       "flags": [
         {
           "name": "org",
@@ -61,6 +61,13 @@
           "usage": "Preview what the plan would do. Nothing is written.",
           "default": "",
           "bool": true,
+          "repeatable": false
+        },
+        {
+          "name": "resume",
+          "usage": "Carry on the run with this id, skipping what it already imported.",
+          "default": "",
+          "bool": false,
           "repeatable": false
         }
       ]
