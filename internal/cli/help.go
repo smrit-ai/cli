@@ -42,7 +42,7 @@ var exitMeanings = []helpExit{
 	{ExitPartial, "The command ran but some items failed or were skipped."},
 	{ExitUsage, "The command line was wrong: an unknown command or flag, or a missing argument."},
 	{ExitNotSignedIn, "There is no usable sign in; run smrit login."},
-	{ExitRefused, "The server refused the request, for example because of permissions or limits."},
+	{ExitRefused, "The request was refused: by the server, for example because of permissions or limits, or by smrit, for example a folder scan will not read."},
 	{ExitUnavailable, "The server could not be reached or failed; try again later."},
 	{ExitUpgrade, "This version of smrit is too old for the server; install a newer release."},
 }

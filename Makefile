@@ -2,7 +2,7 @@ SERVER ?= http://localhost:8000
 MODULE := github.com/smrit-ai/cli
 TARGETS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 
-.PHONY: test test-install build dev release
+.PHONY: test test-install build dev release secret-cases
 
 test:
 	go test ./...
@@ -10,6 +10,11 @@ test:
 
 test-install:
 	sh scripts/install_test.sh
+
+# Regenerates testdata/secret_cases.json from the memory plugin's patterns,
+# when the plugins repository is checked out beside this one.
+secret-cases:
+	python3 -I scripts/secret_cases.py
 
 build:
 	go build -o bin/smrit ./cmd/smrit

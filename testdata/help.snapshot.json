@@ -72,6 +72,11 @@
       ]
     },
     {
+      "name": "scan",
+      "summary": "List the files in folders with their git state, links and flags, never their contents: smrit scan <path>...",
+      "flags": []
+    },
+    {
       "name": "status",
       "summary": "Show who you are signed in as and what you can see.",
       "flags": [
@@ -104,7 +109,7 @@
     },
     {
       "code": 4,
-      "meaning": "The server refused the request, for example because of permissions or limits."
+      "meaning": "The request was refused: by the server, for example because of permissions or limits, or by smrit, for example a folder scan will not read."
     },
     {
       "code": 5,
