@@ -7,6 +7,7 @@
 package setup
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -48,9 +50,15 @@ type Config struct {
 	// absolute folder the project file goes in.
 	Where, Project string
 	Home           string
-	Getenv         func(string) string
-	Exec           Exec
-	Now            func() time.Time
+	// WorkDir is where harness commands run, so Claude Code's local scope
+	// is the project's: the project folder, else the current one.
+	WorkDir string
+	// StateDir is the CLI's state folder; backups of project files go in
+	// its backups folder, never in the working tree.
+	StateDir string
+	Getenv   func(string) string
+	Exec     Exec
+	Now      func() time.Time
 }
 
 // FileChange is one file setup would write.
@@ -69,13 +77,17 @@ type FileChange struct {
 	mode     fs.FileMode
 	dirMode  fs.FileMode
 	exists   bool
+	// rel is the path inside the project, for a project file.
+	rel string
 }
 
 // Command is one harness command setup would run.
 type Command struct {
 	Argv []string `json:"argv"`
-	Ran  bool     `json:"ran"`
-	Exit *int     `json:"exit,omitempty"`
+	// Dir is the folder it runs in, when that matters to what it does.
+	Dir  string `json:"dir,omitempty"`
+	Ran  bool   `json:"ran"`
+	Exit *int   `json:"exit,omitempty"`
 	// Output is the end of what a failed command wrote.
 	Output string `json:"output,omitempty"`
 }
@@ -132,10 +144,15 @@ func Prepare(ctx context.Context, c *Config) (*Plan, error) {
 			paths = append(paths, pp)
 		}
 	}
-	for _, path := range paths {
+	for i, path := range paths {
 		fc, err := blockChange(path, c.Block)
 		if err != nil {
 			return nil, err
+		}
+		if c.Where == BlockProject || (c.Where == BlockBoth && i == len(paths)-1) {
+			if fc.rel, err = filepath.Rel(c.Project, path); err != nil {
+				fc.rel = filepath.Base(path)
+			}
 		}
 		p.Files = append(p.Files, fc)
 	}
@@ -170,58 +187,115 @@ func Prepare(ctx context.Context, c *Config) (*Plan, error) {
 			p.Notes = append(p.Notes, fmt.Sprintf("%s's smrit server already points at %s; setup leaves it as it is.", h.name, address))
 		case "replace":
 			p.Entry = "replace"
+			extras := e.extras
+			if h.extras != nil {
+				more, err := h.extras(c)
+				if err != nil {
+					return nil, err
+				}
+				extras = append(extras, more...)
+			}
+			if len(extras) > 0 {
+				return nil, &Refused{fmt.Sprintf("%s's smrit server points at %s and carries more than an address: %s. setup never removes or replaces it, because those would be lost. Change its address to %s by hand in %s, keeping them, then run setup again.", h.name, redact(e.url), quotedList(extras), address, h.name)}
+			}
 			if h.remove != nil {
 				rm, err := h.remove(e)
 				if err != nil {
 					return nil, err
 				}
-				p.Commands = append(p.Commands, &Command{Argv: rm})
+				p.Commands = append(p.Commands, &Command{Argv: rm, Dir: localDir(rm, c)})
 				p.restore = h.add(e.url, e.scope)
 			}
 			p.Commands = append(p.Commands, &Command{Argv: h.add(address, "")})
 			p.Notes = append(p.Notes, fmt.Sprintf("%s's smrit server points at %s. setup pins it to %s, so a later sign in cannot land in another organization.", h.name, redact(e.url), c.Org))
 		}
 		if e.disabled {
-			p.Notes = append(p.Notes, fmt.Sprintf("%s's smrit server is turned off. Turn it on in %s, for example with %s mcp enable smrit where that exists.", h.name, h.name, h.bin))
+			p.Notes = append(p.Notes, fmt.Sprintf("%s's smrit server is turned off. Turn it on in %s.", h.name, h.name))
 		}
 	}
 	p.Next = append(p.Next, h.approval(c))
 	return p, nil
 }
 
-var pinnedPath = regexp.MustCompile(`^/mcp/o/([^/]+)/([^/]+)/?$`)
+var pinnedPath = regexp.MustCompile(`^/mcp/o/([^/]+)/([^/]+)$`)
 
-// classify decides what to do with an existing smrit server at raw: reuse it
-// when it is the pinned address, replace it when it is another address of
-// Smrit's own for this organization or none, and refuse anything else.
+// classify decides what to do with an existing smrit server at raw. It is
+// reused when it is the pinned address, and replaced when it is Smrit's
+// bare address or this organization's under an older slug. Anything else is
+// refused: another host, another organization, a path setup does not
+// recognise, or an address carrying a user, a query or a fragment.
 func classify(raw string, c *Config, h *harness) (string, error) {
 	pinned := c.Origin + c.Endpoint
 	if raw == pinned || raw == pinned+"/" {
 		return "reuse", nil
 	}
+	leave := func(why string) (string, error) {
+		return "", &Refused{fmt.Sprintf("%s already has a server named smrit, at %s, %s. setup leaves it alone: change or remove it by hand in %s, then run setup again.", h.name, redact(raw), why, h.name)}
+	}
 	u, err1 := url.Parse(raw)
 	o, err2 := url.Parse(c.Origin)
-	if raw == "" || err1 != nil || err2 != nil || u.Scheme != o.Scheme || !strings.EqualFold(u.Host, o.Host) || u.User != nil {
-		where := "something that is not Smrit's address"
-		if raw != "" && err1 == nil {
-			where = redact(raw) + ", which is not Smrit's address"
+	if raw == "" || err1 != nil || err2 != nil || u.Scheme != o.Scheme || !strings.EqualFold(u.Host, o.Host) {
+		return leave("which is not Smrit's address")
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+		return leave("which carries more than Smrit's address")
+	}
+	switch path := u.Path; {
+	case path == "" || path == "/" || path == "/mcp" || path == "/mcp/":
+		return "replace", nil
+	case strings.HasPrefix(path, "/mcp/o/"):
+		m := pinnedPath.FindStringSubmatch(strings.TrimSuffix(path, "/"))
+		if m != nil && m[2] == c.OrgID {
+			return "replace", nil
 		}
-		return "", &Refused{fmt.Sprintf("%s already has a server named smrit, at %s. setup leaves it alone: rename or remove it in %s, then run setup again.", h.name, where, h.name)}
+		if m != nil {
+			return "", &Refused{fmt.Sprintf("%s's smrit server is pinned to another organization, %s. setup leaves it alone: sign in to that one with smrit login and run setup with --org, or remove the entry in %s first.", h.name, quoted(m[1]), h.name)}
+		}
+		return leave("an organization address setup does not recognise")
 	}
-	if m := pinnedPath.FindStringSubmatch(u.Path); m != nil && m[2] != c.OrgID {
-		return "", &Refused{fmt.Sprintf("%s's smrit server is pinned to another organization, %s. setup leaves it alone: sign in to that one with smrit login --org %s and run setup with --org %s, or remove the entry in %s first.", h.name, m[1], m[1], m[1], h.name)}
-	}
-	return "replace", nil
+	return leave("a path setup does not recognise")
 }
 
-// redact is an address without anything that could be a credential: no
-// user, no query and no fragment.
+// redact is an address, quoted, without anything that could be a
+// credential: no user, no query and no fragment. An address that does not
+// parse is cut at its first ? or # and at 200 bytes, and quoted, so nothing
+// from a config file reaches the terminal unescaped.
 func redact(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "an address setup cannot read"
+	s := raw
+	if i := strings.IndexAny(s, "?#"); i >= 0 {
+		s = s[:i]
 	}
-	return u.Scheme + "://" + u.Host + u.EscapedPath()
+	if u, err := url.Parse(s); err == nil && u.Scheme != "" && u.Host != "" {
+		s = u.Scheme + "://" + u.Host + u.EscapedPath()
+	} else if at, scheme := strings.LastIndex(s, "@"), strings.Index(s, "://"); at >= 0 && scheme >= 0 && scheme < at {
+		s = s[:scheme+3] + s[at+1:]
+	}
+	if len(s) > 200 {
+		s = s[:200]
+	}
+	return quoted(s)
+}
+
+// quoted is a value read from someone else's file, escaped for printing.
+func quoted(s string) string { return strconv.Quote(s) }
+
+func quotedList(keys []string) string {
+	q := make([]string, len(keys))
+	for i, k := range keys {
+		q[i] = quoted(k)
+	}
+	return strings.Join(q, ", ")
+}
+
+// localDir is where a Claude Code local scope command runs, shown beside
+// it; "" for every other command.
+func localDir(argv []string, c *Config) string {
+	for _, a := range argv {
+		if a == "local" {
+			return c.WorkDir
+		}
+	}
+	return ""
 }
 
 // readTarget reads a file setup may write. A link or anything but a plain
@@ -267,12 +341,16 @@ func settingsChange(path, rule string) (*FileChange, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, _, err := AddToList(old, []string{"permissions", "allow"}, rule)
+	crlf := bytes.Contains(old, []byte("\r\n"))
+	out, changed, err := AddToList(old, []string{"permissions", "allow"}, rule)
 	if errors.Is(err, ErrNotJSON) {
 		return nil, &Refused{fmt.Sprintf("%s is not valid JSON, so setup leaves it alone. Fix it, then run setup again.", path)}
 	}
 	if err != nil {
 		return nil, &Refused{fmt.Sprintf("setup leaves %s alone: %v.", path, err)}
+	}
+	if changed && crlf {
+		out = bytes.ReplaceAll(out, []byte("\n"), []byte("\r\n"))
 	}
 	if !exists {
 		mode = 0o600
@@ -302,27 +380,53 @@ func blockChange(path, block string) (*FileChange, error) {
 	return fc, nil
 }
 
-// Apply writes each changed file, a backup of it first, and runs each
-// command. It stops at the first file it cannot write. A command that fails
-// is reported, and a replacement whose add failed puts the old entry back.
+// Apply writes each changed file and runs each command.
+//
+// A file is written only while it still holds what Prepare read: Prepare
+// may wait minutes on a harness command, and anything another program
+// wrote meanwhile must not be lost. So every file is checked first, and a
+// change refuses the whole run before anything is written; each file is
+// read again just before its backup, and the bytes backed up are the bytes
+// on disk. A new file is linked into place, never over a file that has
+// appeared. A command that fails is reported, and a replacement whose add
+// failed puts the old entry back.
 func (p *Plan) Apply(ctx context.Context, c *Config) error {
 	p.Applied = true
 	stamp := c.Now().UTC().Format("20060102T150405Z")
+	var changed []*FileChange
 	for _, f := range p.Files {
-		if f.Action == "unchanged" {
-			continue
+		if f.Action != "unchanged" {
+			changed = append(changed, f)
 		}
+	}
+	for _, f := range changed {
+		if err := f.unchangedOnDisk(); err != nil {
+			return &Refused{err.Error() + " setup wrote nothing and ran nothing. Run it again to see the new diff."}
+		}
+	}
+	for _, f := range changed {
 		if f.exists {
-			name, err := backup(f.Path, f.old, f.mode, stamp)
+			name, err := f.backup(c, stamp)
 			if err != nil {
+				var refused *Refused
+				if errors.As(err, &refused) {
+					return &Refused{refused.Msg + " setup left it as it is" + writtenSoFar(changed) + ". Run setup again to see the new diff."}
+				}
 				return &Partial{fmt.Sprintf("Could not back up %s, so it was not changed: %v", f.Path, err)}
 			}
 			f.Backup = name
-		} else if err := os.MkdirAll(filepath.Dir(f.Path), f.dirMode); err != nil {
-			return &Partial{fmt.Sprintf("Could not create the folder for %s: %v", f.Path, err)}
-		}
-		if err := writeAtomic(f.Path, f.new, f.mode); err != nil {
-			return &Partial{fmt.Sprintf("Could not write %s: %v", f.Path, err)}
+			if err := writeAtomic(f.Path, f.new, f.mode); err != nil {
+				return &Partial{fmt.Sprintf("Could not write %s: %v", f.Path, err)}
+			}
+		} else {
+			if err := os.MkdirAll(filepath.Dir(f.Path), f.dirMode); err != nil {
+				return &Partial{fmt.Sprintf("Could not create the folder for %s: %v", f.Path, err)}
+			}
+			if err := writeNew(f.Path, f.new, f.mode); errors.Is(err, fs.ErrExist) {
+				return &Refused{fmt.Sprintf("%s appeared after setup read it. setup left it as it is%s. Run setup again to see the new diff.", f.Path, writtenSoFar(changed))}
+			} else if err != nil {
+				return &Partial{fmt.Sprintf("Could not write %s: %v", f.Path, err)}
+			}
 		}
 		f.Written = true
 	}
@@ -330,7 +434,7 @@ func (p *Plan) Apply(ctx context.Context, c *Config) error {
 		return &Partial{fmt.Sprintf("The files are written, but %s's smrit server is not set up: run %s yourself.", p.Name, Display(p.Commands[0].Argv))}
 	}
 	for i, cmd := range p.Commands {
-		out, errs, code, err := c.Exec(ctx, cmd.Argv)
+		out, errs, code, err := c.Exec(ctx, c.WorkDir, cmd.Argv)
 		cmd.Ran = err == nil
 		if err == nil {
 			cmd.Exit = &code
@@ -344,7 +448,7 @@ func (p *Plan) Apply(ctx context.Context, c *Config) error {
 			msg = fmt.Sprintf("Could not run %s: %v", Display(cmd.Argv), err)
 		}
 		if i > 0 && p.restore != nil {
-			if _, _, rc, rerr := c.Exec(ctx, p.restore); rerr == nil && rc == 0 {
+			if _, _, rc, rerr := c.Exec(ctx, c.WorkDir, p.restore); rerr == nil && rc == 0 {
 				msg += "; the previous smrit server was put back"
 			} else {
 				msg += fmt.Sprintf("; putting the previous smrit server back failed too, so run %s yourself", Display(p.restore))
@@ -353,6 +457,82 @@ func (p *Plan) Apply(ctx context.Context, c *Config) error {
 		return &Partial{msg + "."}
 	}
 	return nil
+}
+
+// unchangedOnDisk checks that the file is still what Prepare read: still a
+// plain file with the same bytes, or still absent.
+func (f *FileChange) unchangedOnDisk() error {
+	now, _, exists, err := readTarget(f.Path)
+	if err != nil {
+		return err
+	}
+	if exists != f.exists || !bytes.Equal(now, f.old) {
+		return &Refused{fmt.Sprintf("%s changed after setup read it.", f.Path)}
+	}
+	return nil
+}
+
+func writtenSoFar(files []*FileChange) string {
+	var done []string
+	for _, f := range files {
+		if f.Written {
+			done = append(done, f.Path)
+		}
+	}
+	if len(done) == 0 {
+		return ", and wrote nothing"
+	}
+	return "; it had already written " + strings.Join(done, ", ")
+}
+
+// backup reads the file again and copies the bytes on disk, with its mode,
+// refusing when they are no longer what Prepare read. A global file's
+// backup goes beside it; a project file's under the state folder,
+// backups/<stamp>/<path in the project>, so no copy lands in a working tree.
+func (f *FileChange) backup(c *Config, stamp string) (string, error) {
+	data, _, exists, err := readTarget(f.Path)
+	if err != nil {
+		return "", err
+	}
+	if !exists || !bytes.Equal(data, f.old) {
+		return "", &Refused{fmt.Sprintf("%s changed after setup read it.", f.Path)}
+	}
+	base := f.Path + ".smrit-backup-" + stamp
+	if f.rel != "" {
+		if c.StateDir == "" {
+			return "", errors.New("there is no state folder to keep the backup in")
+		}
+		base = filepath.Join(c.StateDir, "backups", stamp, f.rel)
+		if err := os.MkdirAll(filepath.Dir(base), 0o700); err != nil {
+			return "", err
+		}
+	}
+	return backup(base, data, f.mode)
+}
+
+// writeNew creates path with data and mode, linking a finished temporary
+// file into place so a file that appeared meanwhile is never replaced: that
+// is fs.ErrExist.
+func writeNew(path string, data []byte, mode fs.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	err = errors.Join(tmp.Chmod(mode), write(tmp, data), tmp.Sync())
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Link(name, path)
+}
+
+func write(f *os.File, data []byte) error {
+	_, err := f.Write(data)
+	return err
 }
 
 // tail is the last few hundred bytes a failed command wrote. The commands
@@ -365,10 +545,9 @@ func tail(s string) string {
 	return s
 }
 
-// backup copies the file's old bytes beside it, with its mode, under a name
-// no other file has.
-func backup(path string, data []byte, mode fs.FileMode, stamp string) (string, error) {
-	base := path + ".smrit-backup-" + stamp
+// backup writes data at base with mode, or at base-1, base-2 and so on
+// when that name is taken: a backup never replaces another file.
+func backup(base string, data []byte, mode fs.FileMode) (string, error) {
 	for n := 0; n < 100; n++ {
 		name := base
 		if n > 0 {
@@ -473,6 +652,9 @@ func (p *Plan) String() string {
 		}
 		for _, c := range p.Commands {
 			fmt.Fprintf(&b, "  %s", Display(c.Argv))
+			if c.Dir != "" {
+				fmt.Fprintf(&b, "  (in %s)", c.Dir)
+			}
 			switch {
 			case c.Exit != nil && *c.Exit != 0:
 				fmt.Fprintf(&b, "  (failed, exit %d)", *c.Exit)

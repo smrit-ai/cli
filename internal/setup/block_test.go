@@ -103,3 +103,62 @@ func TestBlockWithoutEndMarkerRefused(t *testing.T) {
 		t.Fatal("a start marker without an end must be refused, not guessed at")
 	}
 }
+
+func TestBlockWrittenByHandKeepsEveryLineOfItsOwn(t *testing.T) {
+	old := "<!-- smrit:start -->\n## Smrit\nMY CUSTOM RULE\nSmrit is memory.\n\nAnother of mine.\nCall `start` once.\n<!-- smrit:end -->\n"
+	got, err := ApplyBlock(old, wantBlock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "<!-- smrit:start -->\n## Smrit\nSmrit is memory.\n\nCall `start` once.\n<!-- smrit:project -->\nMY CUSTOM RULE\n\nAnother of mine.\n<!-- smrit:end -->\n"
+	if got != want {
+		t.Fatalf("got:\n%s", got)
+	}
+}
+
+func TestMalformedBlocksRefused(t *testing.T) {
+	for _, old := range []string{
+		"<!-- smrit:start -->\nA\n<!-- smrit:start -->\nB\n<!-- smrit:end -->\n",
+		"<!-- smrit:end -->\n<!-- smrit:start -->\nA\n<!-- smrit:end -->\n",
+		"<!-- smrit:start -->\nA\n<!-- smrit:end -->\n<!-- smrit:start -->\nB\n<!-- smrit:end -->\n",
+		"<!-- smrit:start -->\nA\n<!-- smrit:end -->\n<!-- smrit:end -->\n",
+		"<!-- smrit:start -->\n<!-- smrit:project -->\nA\n<!-- smrit:project -->\n<!-- smrit:end -->\n",
+		"A\n<!-- smrit:end -->\n",
+	} {
+		if got, err := ApplyBlock(old, wantBlock); err == nil {
+			t.Fatalf("expected a refusal for %q, got %q", old, got)
+		}
+	}
+}
+
+func TestBlockKeepsCRLF(t *testing.T) {
+	crlf := func(s string) string { return strings.ReplaceAll(s, "\n", "\r\n") }
+	old := crlf("# Rules\n<!-- smrit:start -->\nOld.\n<!-- smrit:project -->\nMine.\n<!-- smrit:end -->\nAfter.\n")
+	got, err := ApplyBlock(old, wantBlock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := crlf("# Rules\n" + strings.TrimSuffix(wantBlock, EndMarker) + "Mine.\n<!-- smrit:end -->\nAfter.\n")
+	if got != want {
+		t.Fatalf("got %q", got)
+	}
+	got, _ = ApplyBlock(crlf("# Rules\n"), wantBlock)
+	if got != crlf("# Rules\n\n"+wantBlock+"\n") {
+		t.Fatalf("appended %q", got)
+	}
+}
+
+func TestExtractBlockStrict(t *testing.T) {
+	fence := func(body string) string { return "# S\n\n```markdown\n" + body + "\n```\n" }
+	for name, skill := range map[string]string{
+		"two starts":    fence("<!-- smrit:start -->\nA\n<!-- smrit:end -->") + fence("<!-- smrit:start -->\nB\n<!-- smrit:end -->"),
+		"two ends":      fence("<!-- smrit:start -->\nA\n<!-- smrit:end -->\n<!-- smrit:end -->"),
+		"two projects":  fence("<!-- smrit:start -->\nA\n<!-- smrit:project -->\n<!-- smrit:project -->\n<!-- smrit:end -->"),
+		"too big":       fence("<!-- smrit:start -->\n" + strings.Repeat("x", 17<<10) + "\n<!-- smrit:end -->"),
+		"project after": fence("<!-- smrit:start -->\nA\n<!-- smrit:end -->\n<!-- smrit:project -->"),
+	} {
+		if _, err := ExtractBlock(skill); err == nil {
+			t.Fatalf("%s: expected a refusal", name)
+		}
+	}
+}

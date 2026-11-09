@@ -14,108 +14,175 @@ const (
 	EndMarker     = "<!-- smrit:end -->"
 )
 
-// ErrNoBlock means the served skill has no always on block to write.
-var ErrNoBlock = errors.New("The onboarding skill Smrit served has no always on block, so setup has nothing to write. Try again later, or upgrade smrit.")
+// MaxBlock bounds the served block, which is a few paragraphs.
+const MaxBlock = 16 << 10
+
+// ErrNoBlock means the served skill has no always on block setup can trust.
+var ErrNoBlock = errors.New("The onboarding skill Smrit served has no always on block setup can use, so it has nothing to write. Try again later, or upgrade smrit.")
 
 func isMarker(line, marker string) bool { return strings.TrimSpace(line) == marker }
 
+// markers is the index of every line that is exactly marker.
+func markers(lines []string, marker string) []int {
+	var at []int
+	for i, l := range lines {
+		if isMarker(l, marker) {
+			at = append(at, i)
+		}
+	}
+	return at
+}
+
 // ExtractBlock returns the always on block from the served onboarding
-// skill: the fenced markdown block holding the start and end markers, from
-// the start marker through the end marker. When the served block has no
-// project line, one is put on its own line just before the end marker.
+// skill: from the start marker through the end marker, inside a fenced
+// markdown block. The skill must hold exactly one start and one end marker
+// line, at most one project line between them, and the block must be at
+// most MaxBlock bytes. When the served block has no project line, one is
+// put on its own line just before the end marker.
 func ExtractBlock(skill string) (string, error) {
 	lines := strings.Split(strings.ReplaceAll(skill, "\r\n", "\n"), "\n")
-	for i := 0; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) != "```markdown" {
-			continue
-		}
-		start, end := -1, -1
-		j := i + 1
-		for ; j < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[j]), "```"); j++ {
-			switch {
-			case start < 0 && isMarker(lines[j], StartMarker):
-				start = j
-			case start >= 0 && end < 0 && isMarker(lines[j], EndMarker):
-				end = j
-			}
-		}
-		if start >= 0 && end > start {
-			block := append([]string(nil), lines[start:end+1]...)
-			for k := range block {
-				block[k] = strings.TrimRight(block[k], " \t")
-			}
-			hasProject := false
-			for _, l := range block {
-				if isMarker(l, ProjectMarker) {
-					hasProject = true
-				}
-			}
-			if !hasProject {
-				block = append(block[:len(block)-1], ProjectMarker, EndMarker)
-			}
-			return strings.Join(block, "\n"), nil
-		}
-		i = j
+	starts, ends, projects := markers(lines, StartMarker), markers(lines, EndMarker), markers(lines, ProjectMarker)
+	if len(starts) != 1 || len(ends) != 1 || len(projects) > 1 {
+		return "", ErrNoBlock
 	}
-	return "", ErrNoBlock
+	start, end := starts[0], ends[0]
+	if end < start || (len(projects) == 1 && (projects[0] < start || projects[0] > end)) {
+		return "", ErrNoBlock
+	}
+	// The block sits in a fence opened with ```markdown and not closed
+	// before the end marker.
+	open := -1
+	for i := start - 1; i >= 0; i-- {
+		if strings.HasPrefix(strings.TrimSpace(lines[i]), "```") {
+			if strings.TrimSpace(lines[i]) == "```markdown" {
+				open = i
+			}
+			break
+		}
+	}
+	if open < 0 {
+		return "", ErrNoBlock
+	}
+	for _, l := range lines[start:end] {
+		if strings.HasPrefix(strings.TrimSpace(l), "```") {
+			return "", ErrNoBlock
+		}
+	}
+	block := append([]string(nil), lines[start:end+1]...)
+	for k := range block {
+		block[k] = strings.TrimRight(block[k], " \t")
+	}
+	if len(projects) == 0 {
+		block = append(block[:len(block)-1], ProjectMarker, EndMarker)
+	}
+	out := strings.Join(block, "\n")
+	if len(out) > MaxBlock {
+		return "", ErrNoBlock
+	}
+	return out, nil
 }
 
 // ApplyBlock writes block, which ExtractBlock returned, into the text of an
-// instruction file. Where the file has a block already, the served part,
-// from the start marker through the project line, is replaced and whatever
-// follows the project line up to the end marker is kept exactly. A block
-// written by hand, without a project line, keeps as its project paragraph
-// everything after the last line it shares with the served text. Without a
-// block, the block is appended after a blank line.
+// instruction file.
+//
+// Where the file has a block, the served part, from the start marker
+// through the project line, is replaced, and whatever follows the project
+// line up to the end marker is kept exactly. A block written by hand,
+// without a project line, keeps every line that is not part of the served
+// text, in its order, below the project line. Without a block, the block is
+// appended after a blank line. A file whose markers are not one start, then
+// at most one project line, then one end, is refused, never rewritten. A
+// file with CRLF line endings gets CRLF on every line written.
 func ApplyBlock(text, block string) (string, error) {
 	served := strings.Split(block, "\n")
 	p := indexMarker(served, ProjectMarker, 0)
 	if p < 0 || !isMarker(served[0], StartMarker) || !isMarker(served[len(served)-1], EndMarker) {
 		return "", ErrNoBlock
 	}
-	head := served[:p+1]
+	eol := "\n"
+	if strings.Contains(text, "\r\n") {
+		eol = "\r\n"
+	}
+	cr := strings.TrimSuffix(eol, "\n")
+	head := make([]string, p+1)
+	for i, l := range served[:p+1] {
+		head[i] = l + cr
+	}
 
 	lines := strings.Split(text, "\n")
-	start := indexMarker(lines, StartMarker, 0)
-	if start < 0 {
+	starts, ends := markers(lines, StartMarker), markers(lines, EndMarker)
+	if len(starts) == 0 && len(ends) == 0 {
 		if text == "" {
-			return block + "\n", nil
+			return strings.Join(served, eol) + eol, nil
 		}
 		if !strings.HasSuffix(text, "\n") {
-			text += "\n"
+			text += eol
 		}
-		if !strings.HasSuffix(text, "\n\n") {
-			text += "\n"
+		if !strings.HasSuffix(text, "\n\n") && !strings.HasSuffix(text, "\n\r\n") {
+			text += eol
 		}
-		return text + block + "\n", nil
+		return text + strings.Join(served, eol) + eol, nil
 	}
-	end := indexMarker(lines, EndMarker, start+1)
-	if end < 0 {
+	switch {
+	case len(starts) > 1:
+		return "", fmt.Errorf("it has %s more than once", StartMarker)
+	case len(ends) > 1:
+		return "", fmt.Errorf("it has %s more than once", EndMarker)
+	case len(starts) == 0:
+		return "", fmt.Errorf("it has %s without %s before it", EndMarker, StartMarker)
+	case len(ends) == 0:
 		return "", fmt.Errorf("it has %s without %s after it", StartMarker, EndMarker)
+	case ends[0] < starts[0]:
+		return "", fmt.Errorf("it has %s before %s", EndMarker, StartMarker)
+	}
+	start, end := starts[0], ends[0]
+	projects := markers(lines[start:end], ProjectMarker)
+	if len(projects) > 1 {
+		return "", fmt.Errorf("its block has %s more than once", ProjectMarker)
+	}
+	if len(markers(lines[:start], ProjectMarker))+len(markers(lines[end:], ProjectMarker)) > 0 {
+		return "", fmt.Errorf("it has %s outside the block", ProjectMarker)
 	}
 	var keep []string
-	if pl := indexMarker(lines[:end], ProjectMarker, start+1); pl >= 0 {
-		keep = lines[pl+1 : end]
+	if len(projects) == 1 {
+		keep = lines[start+projects[0]+1 : end]
 	} else {
-		keep = lines[start+1 : end]
-		known := map[string]bool{}
-		for _, l := range served[1:p] {
-			if strings.TrimSpace(l) != "" {
-				known[strings.TrimSpace(l)] = true
-			}
-		}
-		for k := end - 1; k > start; k-- {
-			if known[strings.TrimSpace(lines[k])] {
-				keep = lines[k+1 : end]
-				break
-			}
-		}
+		keep = ownLines(lines[start+1:end], served[1:p], cr)
 	}
 	out := append([]string(nil), lines[:start]...)
 	out = append(out, head...)
 	out = append(out, keep...)
 	out = append(out, lines[end:]...)
 	return strings.Join(out, "\n"), nil
+}
+
+// ownLines is every line of a hand written block that is not a line of the
+// served text, in order. Blank lines are kept only between two kept lines,
+// one at most; cr ends the blank lines it adds.
+func ownLines(old, served []string, cr string) []string {
+	known := map[string]bool{}
+	for _, l := range served {
+		if t := strings.TrimSpace(l); t != "" {
+			known[t] = true
+		}
+	}
+	var keep []string
+	blank := false
+	for _, l := range old {
+		t := strings.TrimSpace(l)
+		switch {
+		case t == "":
+			blank = len(keep) > 0
+		case known[t]:
+		default:
+			if blank {
+				keep = append(keep, cr)
+			}
+			keep = append(keep, l)
+			blank = false
+		}
+	}
+	return keep
 }
 
 func indexMarker(lines []string, marker string, from int) int {

@@ -2,6 +2,7 @@ package setup
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -69,5 +70,30 @@ func TestAddToListRefusesWhatItCannotEdit(t *testing.T) {
 	_, _, err := AddToList([]byte(`{not json`), []string{"permissions", "allow"}, "r")
 	if !errors.Is(err, ErrNotJSON) {
 		t.Fatalf("a file that does not parse must say so: %v", err)
+	}
+}
+
+func TestAddToListRefusesDuplicateKeys(t *testing.T) {
+	for _, in := range []string{
+		`{"permissions":{"allow":[]},"permissions":{}}`,
+		`{"env":{"A":"1","A":"2"}}`,
+		`{"x":[{"k":1,"k":2}]}`,
+	} {
+		_, _, err := AddToList([]byte(in), []string{"permissions", "allow"}, "r")
+		if err == nil || !strings.Contains(err.Error(), "twice") {
+			t.Fatalf("%s: %v", in, err)
+		}
+	}
+}
+
+func TestAddToListRefusesHalfACharacter(t *testing.T) {
+	for _, in := range []string{`{"a":"\ud800"}`, `{"a":"\udc00x"}`, `{"a":"\ud800A"}`, `{"\ud83d":1}`, "{\"a\":\"\xff\"}"} {
+		if _, _, err := AddToList([]byte(in), []string{"p"}, "r"); err == nil {
+			t.Fatalf("%s: expected a refusal", in)
+		}
+	}
+	out, _, err := AddToList([]byte(`{"a":"😀 \\ud800"}`), []string{"p"}, "r")
+	if err != nil || !strings.Contains(string(out), "😀") || !strings.Contains(string(out), `\\ud800`) {
+		t.Fatalf("a whole pair and an escaped backslash are fine: %v %s", err, out)
 	}
 }

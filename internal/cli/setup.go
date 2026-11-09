@@ -14,6 +14,7 @@ import (
 
 	"github.com/smrit-ai/cli/internal/profile"
 	harnesssetup "github.com/smrit-ai/cli/internal/setup"
+	"github.com/smrit-ai/cli/internal/state"
 )
 
 // onboardingSkillID is the served skill whose always on block setup writes.
@@ -81,7 +82,7 @@ func runSetup(ctx context.Context, s *Services, env *Env, args []string) int {
 		return report(env, err)
 	}
 	var project string
-	if builtin && where != harnesssetup.BlockEverywhere {
+	if builtin && (where != harnesssetup.BlockEverywhere || env.Flags["project"] != "") {
 		if project, err = projectDir(ctx, env.Flags["project"]); err != nil {
 			return usageError(env.Stderr, "%v", err)
 		}
@@ -122,9 +123,19 @@ func runSetup(ctx context.Context, s *Services, env *Env, args []string) int {
 	if now == nil {
 		now = time.Now
 	}
+	// Harness commands run in the project, so Claude Code's local scope is
+	// the project's; without one, in the current folder.
+	workDir := project
+	if workDir == "" {
+		if workDir, err = os.Getwd(); err != nil {
+			workDir = ""
+		}
+	}
+	stateDir, _ := state.Dir()
 	cfg := &harnesssetup.Config{
 		Harness: id, Origin: s.Origin, Endpoint: p.Endpoint, Org: p.Org, OrgID: p.OrgID,
 		Block: block, Where: where, Project: project, Home: home,
+		WorkDir: workDir, StateDir: stateDir,
 		Getenv: os.Getenv, Exec: harnesssetup.SystemExec, Now: now,
 	}
 	plan, err := harnesssetup.Prepare(ctx, cfg)
@@ -144,6 +155,10 @@ func runSetup(ctx context.Context, s *Services, env *Env, args []string) int {
 	env.Result(plan)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err.Error())
+		var refused *harnesssetup.Refused
+		if errors.As(err, &refused) {
+			return ExitRefused
+		}
 		return ExitPartial
 	}
 	return ExitOK

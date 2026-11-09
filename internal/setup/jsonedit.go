@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ErrNotJSON means a settings file does not parse, so it is left alone.
@@ -24,13 +26,28 @@ type node struct {
 	b     bool
 }
 
+// parseJSON reads raw strictly: it refuses what encoding/json would
+// quietly change on the way through, so a rewrite never alters a value the
+// person did not ask to change. That is invalid UTF-8 and a \u escape that
+// is half of a character, both of which would become U+FFFD, and a key
+// given twice in one object, of which a harness reads only one.
 func parseJSON(raw []byte) (*node, error) {
 	if !json.Valid(raw) {
 		return nil, ErrNotJSON
 	}
+	if !utf8.Valid(raw) {
+		return nil, errors.New("it holds bytes that are not UTF-8")
+	}
+	if loneSurrogate(raw) {
+		return nil, errors.New("it holds a \\u escape that is half of a character")
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	n, err := parseValue(dec)
+	var dup *duplicateKey
+	if errors.As(err, &dup) {
+		return nil, err
+	}
 	if err != nil {
 		return nil, ErrNotJSON
 	}
@@ -50,6 +67,7 @@ func parseValue(dec *json.Decoder) (*node, error) {
 		switch t {
 		case '{':
 			n := &node{kind: 'o'}
+			seen := map[string]bool{}
 			for dec.More() {
 				kt, err := dec.Token()
 				if err != nil {
@@ -59,6 +77,10 @@ func parseValue(dec *json.Decoder) (*node, error) {
 				if !ok {
 					return nil, ErrNotJSON
 				}
+				if seen[k] {
+					return nil, &duplicateKey{k}
+				}
+				seen[k] = true
 				v, err := parseValue(dec)
 				if err != nil {
 					return nil, err
@@ -94,6 +116,56 @@ func parseValue(dec *json.Decoder) (*node, error) {
 		return &node{kind: 'z'}, nil
 	}
 	return nil, ErrNotJSON
+}
+
+// duplicateKey is a key given twice in one object.
+type duplicateKey struct{ key string }
+
+func (e *duplicateKey) Error() string {
+	return fmt.Sprintf("it has the key %q twice in one object, and a harness reads only one of them", e.key)
+}
+
+// loneSurrogate reports whether a string in raw, which is valid JSON, holds
+// a \u escape of a UTF-16 surrogate that is not one half of a pair.
+func loneSurrogate(raw []byte) bool {
+	hex := func(i int) (rune, bool) {
+		if i+6 > len(raw) || raw[i] != '\\' || raw[i+1] != 'u' {
+			return 0, false
+		}
+		v, err := strconv.ParseUint(string(raw[i+2:i+6]), 16, 32)
+		return rune(v), err == nil
+	}
+	in := false
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if !in {
+			in = c == '"'
+			continue
+		}
+		switch c {
+		case '"':
+			in = false
+		case '\\':
+			r, ok := hex(i)
+			if !ok {
+				i++ // a two character escape such as \\ or \"
+				continue
+			}
+			switch {
+			case r >= 0xD800 && r <= 0xDBFF:
+				lo, ok := hex(i + 6)
+				if !ok || lo < 0xDC00 || lo > 0xDFFF {
+					return true
+				}
+				i += 11
+			case r >= 0xDC00 && r <= 0xDFFF:
+				return true
+			default:
+				i += 5
+			}
+		}
+	}
+	return false
 }
 
 func (n *node) get(key string) *node {
