@@ -40,6 +40,17 @@ var (
 	ErrUpgrade = errors.New("This version of smrit is too old for the server. Upgrade smrit.")
 )
 
+// errRateLimited is what a 429 that outlasted the retries says. It is an
+// ErrUnavailable with a sentence of its own.
+var errRateLimited = &rateLimited{}
+
+type rateLimited struct{}
+
+func (*rateLimited) Error() string {
+	return "Smrit is limiting how fast this client can call. Try again in a minute."
+}
+func (*rateLimited) Is(target error) bool { return target == ErrUnavailable }
+
 // ToolError is a refusal from the tool or the protocol, with the server's words.
 type ToolError struct{ Message string }
 
@@ -58,10 +69,8 @@ type Client struct {
 	Now   func() time.Time
 	Sleep func(ctx context.Context, d time.Duration) error
 
-	mu     sync.Mutex
-	tokens float64
-	last   time.Time
-	primed bool
+	mu    sync.Mutex
+	calls []time.Time // when each call in the last minute was sent
 }
 
 func (c *Client) now() time.Time {
@@ -97,36 +106,42 @@ func (c *Client) http() *http.Client {
 	return &hc
 }
 
-// pace takes one slot of the 120 a minute budget, waiting when none is left.
+// pace takes one slot of the budget: at most CallsPerMinute calls in any
+// 60 second window, waiting for the oldest call to leave the window when full.
 func (c *Client) pace(ctx context.Context) error {
 	for {
 		c.mu.Lock()
 		now := c.now()
-		if !c.primed {
-			c.primed, c.tokens, c.last = true, CallsPerMinute, now
-		}
-		if el := now.Sub(c.last); el > 0 {
-			c.tokens += el.Seconds() * CallsPerMinute / 60
-			if c.tokens > CallsPerMinute {
-				c.tokens = CallsPerMinute
+		keep := c.calls[:0]
+		for _, t := range c.calls {
+			if now.Sub(t) < time.Minute {
+				keep = append(keep, t)
 			}
-			c.last = now
 		}
-		if c.tokens >= 1 {
-			c.tokens--
+		c.calls = keep
+		if len(c.calls) < CallsPerMinute {
+			c.calls = append(c.calls, now)
 			c.mu.Unlock()
 			return nil
 		}
-		wait := time.Duration((1 - c.tokens) / CallsPerMinute * float64(time.Minute))
+		wait := c.calls[0].Add(time.Minute).Sub(now)
 		c.mu.Unlock()
 		if wait < time.Millisecond {
 			wait = time.Millisecond
 		}
 		if err := c.sleep(ctx, wait); err != nil {
-			return err
+			return stopped(err)
 		}
 	}
 }
+
+// stopped is the sentence for a cancelled or timed out context.
+type stoppedError struct{ cause error }
+
+func (e *stoppedError) Error() string { return "Stopped before Smrit answered." }
+func (e *stoppedError) Unwrap() error { return e.cause }
+
+func stopped(cause error) error { return &stoppedError{cause} }
 
 func validPath(p string) bool {
 	if p == "/mcp" {
@@ -140,12 +155,19 @@ func validPath(p string) bool {
 	return ok && profile.ValidSlug(slug) && profile.ValidID(id) && p == profile.EndpointPath(slug, id)
 }
 
-func retryAfter(h string) time.Duration {
-	n, err := strconv.Atoi(strings.TrimSpace(h))
-	if err != nil || n < 1 {
-		n = 1
+// retryAfter reads Retry-After as seconds or as an HTTP date, at least one
+// second and at most MaxWait.
+func retryAfter(h string, now time.Time) time.Duration {
+	h = strings.TrimSpace(h)
+	d := time.Second
+	if n, err := strconv.Atoi(h); err == nil {
+		d = time.Duration(n) * time.Second
+	} else if t, err := http.ParseTime(h); err == nil {
+		d = t.Sub(now)
 	}
-	d := time.Duration(n) * time.Second
+	if d < time.Second {
+		d = time.Second
+	}
 	if d > MaxWait {
 		d = MaxWait
 	}
@@ -188,7 +210,7 @@ func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (js
 		resp, err := c.http().Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return nil, stopped(ctx.Err())
 			}
 			return nil, ErrUnavailable
 		}
@@ -197,10 +219,10 @@ func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (js
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests:
 			if attempt >= MaxRetries {
-				return nil, fmt.Errorf("%w Smrit is rate limiting this client.", ErrUnavailable)
+				return nil, errRateLimited
 			}
-			if err := c.sleep(ctx, retryAfter(resp.Header.Get("Retry-After"))); err != nil {
-				return nil, err
+			if err := c.sleep(ctx, retryAfter(resp.Header.Get("Retry-After"), c.now())); err != nil {
+				return nil, stopped(err)
 			}
 			continue
 		case resp.StatusCode == http.StatusUnauthorized:

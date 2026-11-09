@@ -170,25 +170,71 @@ func TestCall429GivesUpAfterThree(t *testing.T) {
 	}
 }
 
-func TestPacingAt120APerMinute(t *testing.T) {
+func TestPacingNeverExceeds120InAnyMinute(t *testing.T) {
+	var stamps []time.Time
 	f := newFake(t, func(n int, w http.ResponseWriter, r *http.Request) {
 		ok(w, `{"content":[{"type":"text","text":"1"}]}`)
 	})
 	c := &clock{t: time.Unix(1000, 0)}
 	cl := client(f, c)
-	for i := 0; i < 120; i++ {
+	for i := 0; i < 121; i++ {
+		if i == 120 && len(c.sleeps) != 0 {
+			t.Fatalf("slept inside the budget: %v", c.sleeps)
+		}
 		if _, err := cl.Call(context.Background(), "t", nil); err != nil {
 			t.Fatal(err)
 		}
+		stamps = append(stamps, c.t)
 	}
-	if len(c.sleeps) != 0 {
-		t.Fatalf("slept inside the budget: %v", c.sleeps)
+	if got := c.t.Sub(time.Unix(1000, 0)); got != 60*time.Second {
+		t.Fatalf("call 121 went at +%v, want +60s", got)
 	}
-	if _, err := cl.Call(context.Background(), "t", nil); err != nil {
+	for i := range stamps {
+		n := 0
+		for j := 0; j <= i; j++ {
+			if stamps[i].Sub(stamps[j]) < 60*time.Second {
+				n++
+			}
+		}
+		if n > 120 {
+			t.Fatalf("%d calls inside one minute", n)
+		}
+	}
+}
+
+func TestRetryAfterCappedAndDateParsed(t *testing.T) {
+	f := newFake(t, func(n int, w http.ResponseWriter, r *http.Request) {
+		switch n {
+		case 1:
+			w.Header().Set("Retry-After", "86400")
+			w.WriteHeader(429)
+		case 2:
+			w.Header().Set("Retry-After", time.Unix(1060, 0).Add(30*time.Second).UTC().Format(http.TimeFormat))
+			w.WriteHeader(429)
+		default:
+			ok(w, `{"content":[{"type":"text","text":"1"}]}`)
+		}
+	})
+	c := &clock{t: time.Unix(1000, 0)}
+	if _, err := client(f, c).Call(context.Background(), "t", nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(c.sleeps) != 1 || c.sleeps[0] <= 0 || c.sleeps[0] > time.Second {
+	if len(c.sleeps) != 2 || c.sleeps[0] != 60*time.Second || c.sleeps[1] != 30*time.Second {
 		t.Fatalf("sleeps %v", c.sleeps)
+	}
+}
+
+func TestMessagesAreSentences(t *testing.T) {
+	f := newFake(t, func(n int, w http.ResponseWriter, r *http.Request) { w.WriteHeader(429) })
+	_, err := client(f, &clock{t: time.Unix(1000, 0)}).Call(context.Background(), "t", nil)
+	if !errors.Is(err, ErrUnavailable) || err.Error() != "Smrit is limiting how fast this client can call. Try again in a minute." {
+		t.Fatalf("%q", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = client(f, &clock{t: time.Unix(1000, 0)}).Call(ctx, "t", nil)
+	if err == nil || err.Error() != "Stopped before Smrit answered." {
+		t.Fatalf("%v", err)
 	}
 }
 

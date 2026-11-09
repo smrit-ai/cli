@@ -12,9 +12,20 @@ import (
 type statusResult struct {
 	SignedIn     bool            `json:"signed_in"`
 	Organization json.RawMessage `json:"organization"`
-	You          json.RawMessage `json:"you"`
+	You          json.RawMessage `json:"you"` // memory.you; null without the memory feature
 	Spaces       json.RawMessage `json:"spaces"`
 	Version      string          `json:"version"`
+}
+
+// youName is the name in memory.you, or the raw JSON when it has none.
+func youName(raw json.RawMessage) string {
+	var y struct {
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(raw, &y) == nil && y.Name != "" {
+		return y.Name
+	}
+	return string(raw)
 }
 
 func (r statusResult) String() string {
@@ -25,7 +36,7 @@ func (r statusResult) String() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Signed in to %s\n", o)
 	if len(r.You) > 0 && string(r.You) != "null" {
-		fmt.Fprintf(&b, "You: %s\n", r.You)
+		fmt.Fprintf(&b, "You: %s\n", youName(r.You))
 	}
 	fmt.Fprintf(&b, "Spaces: %s\n", strings.Join(spaces, ", "))
 	fmt.Fprintf(&b, "smrit %s", r.Version)
@@ -53,7 +64,15 @@ func statusCommand(s *Services) Command {
 			if err := json.Unmarshal(raw, &m); err != nil {
 				return report(env, fmt.Errorf("Smrit sent an answer this CLI cannot read."))
 			}
-			env.Result(statusResult{SignedIn: true, Organization: m["organization"], You: m["you"], Spaces: m["spaces"], Version: version.Version})
+			var mem struct {
+				You json.RawMessage `json:"you"`
+			}
+			json.Unmarshal(m["memory"], &mem) // absent without the memory feature
+			you := mem.You
+			if string(you) == "null" {
+				you = nil
+			}
+			env.Result(statusResult{SignedIn: true, Organization: m["organization"], You: you, Spaces: m["spaces"], Version: version.Version})
 			return ExitOK
 		},
 	}

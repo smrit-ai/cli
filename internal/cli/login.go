@@ -53,12 +53,14 @@ func loginCommand(s *Services) Command {
 			}
 			var org orgInfo
 			opts := auth.LoginOptions{
-				Org:    env.Flags["org"],
-				Notice: env.Stderr,
+				Org: env.Flags["org"],
 				OpenBrowser: func(url string) error {
 					// Shown first so a person without a browser opener can paste it.
 					fmt.Fprintf(env.Stderr, "Opening your browser to sign in. If it does not open, visit:\n%s\n", url)
-					return s.OpenBrowser(url)
+					// The URL is already shown, so a browser that will not open is
+					// not a failure: the person can paste it, and Login waits.
+					_ = s.OpenBrowser(url)
+					return nil
 				},
 				Verify: func(ctx context.Context, accessToken string) (string, string, error) {
 					c := &mcp.Client{Origin: s.Origin, Path: "/mcp", Version: version.Version, HTTP: s.HTTP, Now: s.Now, Sleep: s.Sleep,

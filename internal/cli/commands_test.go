@@ -24,12 +24,13 @@ const (
 )
 
 type mcpFake struct {
-	mu     sync.Mutex
-	paths  []string
-	auths  []string
-	bodies []map[string]any
-	status int
-	tool   func(name string, args map[string]any) string
+	mu       sync.Mutex
+	paths    []string
+	auths    []string
+	bodies   []map[string]any
+	status   int
+	rpcError bool
+	tool     func(name string, args map[string]any) string
 }
 
 func newMCP(t *testing.T) (*mcpFake, *httptest.Server) {
@@ -44,13 +45,19 @@ func newMCP(t *testing.T) (*mcpFake, *httptest.Server) {
 		f.bodies = append(f.bodies, m)
 		status := f.status
 		f.mu.Unlock()
+		echo := r.Header.Get("Authorization")
 		if status != 0 {
 			w.WriteHeader(status)
+			io.WriteString(w, "denied for "+echo)
+			return
+		}
+		if f.rpcError {
+			io.WriteString(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"Unknown tool.","data":"seen `+echo+`"}}`)
 			return
 		}
 		p := m["params"].(map[string]any)
 		args, _ := p["arguments"].(map[string]any)
-		out := `{"organization":{"slug":"acme","id":"` + orgID + `","name":"Acme"},"you":{"name":"Pat"},"spaces":["handbook"]}`
+		out := `{"organization":{"slug":"acme","id":"` + orgID + `","name":"Acme"},"memory":{"you":{"name":"Pat","kind":"user","org_role":"admin"}},"spaces":["handbook"]}`
 		if f.tool != nil {
 			out = f.tool(p["name"].(string), args)
 		}
@@ -190,12 +197,29 @@ func TestStatusReportsOrganization(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &m); err != nil {
 		t.Fatal(out)
 	}
-	if m["signed_in"] != true || m["version"] == nil || m["spaces"] == nil || m["you"] == nil || m["organization"].(map[string]any)["slug"] != "acme" {
+	if m["signed_in"] != true || m["version"] == nil || m["spaces"] == nil || m["you"].(map[string]any)["name"] != "Pat" || m["organization"].(map[string]any)["slug"] != "acme" {
 		t.Fatalf("%v", m)
 	}
 	// text mode is readable
 	var o, e bytes.Buffer
-	if c := Run(context.Background(), Commands(svc), []string{"--json=false", "status"}, &o, &e, true); c != ExitOK || !strings.Contains(o.String(), "Acme") {
+	if c := Run(context.Background(), Commands(svc), []string{"--json=false", "status"}, &o, &e, true); c != ExitOK || !strings.Contains(o.String(), "Acme") || !strings.Contains(o.String(), "Pat") {
+		t.Fatalf("%d %q", c, o.String())
+	}
+}
+
+func TestStatusWithoutMemoryHasNoYou(t *testing.T) {
+	f, srv := newMCP(t)
+	f.tool = func(string, map[string]any) string {
+		return `{"organization":{"slug":"acme","id":"` + orgID + `","name":"Acme"},"spaces":["handbook"]}`
+	}
+	svc := setup(t, srv, prof("acme", orgID))
+	code, out, errs := runCmd(t, svc, "status")
+	var m map[string]any
+	if code != ExitOK || json.Unmarshal([]byte(out), &m) != nil || m["you"] != nil {
+		t.Fatalf("%d %q %q", code, out, errs)
+	}
+	var o, e bytes.Buffer
+	if c := Run(context.Background(), Commands(svc), []string{"--json=false", "status"}, &o, &e, true); c != ExitOK || strings.Contains(o.String(), "You:") {
 		t.Fatalf("%d %q", c, o.String())
 	}
 }
@@ -347,11 +371,53 @@ func TestNoCommandPrintsToken(t *testing.T) {
 			// headless too
 		}
 	}
+	f.mu.Lock()
+	f.status, f.rpcError = 0, true
+	f.mu.Unlock()
+	for _, c := range cases {
+		_, out, errs := runCmd(t, svc, c...)
+		if strings.Contains(out, fakeToken) || strings.Contains(errs, fakeToken) {
+			t.Errorf("%v (rpc error) printed the token: %q %q", c, out, errs)
+		}
+	}
+	f.mu.Lock()
+	f.rpcError = false
+	f.mu.Unlock()
 	svc.Headless = func() (string, bool) { return fakeToken, true }
 	for _, c := range cases {
 		_, out, errs := runCmd(t, svc, c...)
 		if strings.Contains(out, fakeToken) || strings.Contains(errs, fakeToken) {
 			t.Errorf("headless %v printed the token", c)
 		}
+	}
+}
+
+func TestLoginPrintsURLOnce(t *testing.T) {
+	_, srv := newMCP(t)
+	svc := setup(t, srv)
+	svc.OpenBrowser = func(string) error { return errors.New("no opener") }
+	const u = "https://example.test/authorize?x=1"
+	svc.Login = func(ctx context.Context, o auth.LoginOptions) (profile.Profile, error) {
+		err := o.OpenBrowser(u)
+		if err != nil && o.Notice != nil {
+			io.WriteString(o.Notice, "Open this address in a browser to sign in:\n"+u+"\n")
+		}
+		return profile.Profile{}, auth.ErrLoginFailed
+	}
+	_, _, errs := runCmd(t, svc, "login")
+	if n := strings.Count(errs, u); n != 1 {
+		t.Fatalf("url printed %d times: %q", n, errs)
+	}
+}
+
+func TestStoppedContextPrintsASentence(t *testing.T) {
+	_, srv := newMCP(t)
+	svc := setup(t, srv, prof("acme", orgID))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out, errb bytes.Buffer
+	code := Run(ctx, Commands(svc), []string{"status"}, &out, &errb, false)
+	if code != ExitUnavailable || strings.Contains(errb.String(), "context canceled") || !strings.Contains(errb.String(), "Stopped before Smrit answered.") {
+		t.Fatalf("%d %q", code, errb.String())
 	}
 }
