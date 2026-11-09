@@ -2,7 +2,7 @@
 
 The Smrit command line. It signs in to Smrit and moves a folder of docs into it. It is built for agents as much as for people: when its output is not a terminal it writes JSON, and `smrit help --json` describes every command, flag and exit code.
 
-Documentation: coming soon
+Documentation: [Smrit CLI](https://smrit.ai/smrit/docs/d/CB8qx47pDhsLuHMwZNdzh), what it is for and how it works.
 
 ## Install
 
@@ -73,7 +73,7 @@ The hosts the CLI connects to are built in, and nothing in a release build chang
 
 `smrit login` also opens Smrit's sign in page in your browser, and listens on 127.0.0.1, on your own machine, for the browser to come back.
 
-To report a vulnerability, email security@smrit.ai. Please do not open a public issue for it.
+To report a vulnerability, use GitHub's private vulnerability reporting on this repository (Security, then Report a vulnerability). Please do not open a public issue for it.
 
 ## Licence
 
