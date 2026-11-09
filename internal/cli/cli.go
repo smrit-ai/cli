@@ -34,6 +34,8 @@ type Flag struct {
 	Usage   string
 	Default string
 	Bool    bool
+	// Multi marks a flag that may repeat; its values are in Env.Lists.
+	Multi bool
 }
 
 // Command is one entry in the command table.
@@ -51,6 +53,8 @@ type Env struct {
 	// Flags holds the parsed value of each of the command's flags, by name.
 	// A bool flag reads "true" or "false".
 	Flags map[string]string
+	// Lists holds every value of each Multi flag, in the order given.
+	Lists map[string][]string
 }
 
 // Result writes v as one JSON object and a newline under JSON mode, and as
@@ -175,8 +179,12 @@ func Run(ctx context.Context, table []Command, args []string, stdout, stderr io.
 	fs.SetOutput(io.Discard)
 	vals := map[string]*string{}
 	bools := map[string]*bool{}
+	lists := map[string][]string{}
 	for _, f := range cmd.Flags {
-		if f.Bool {
+		if f.Multi {
+			name := f.Name
+			fs.Func(name, f.Usage, func(v string) error { lists[name] = append(lists[name], v); return nil })
+		} else if f.Bool {
 			bools[f.Name] = fs.Bool(f.Name, f.Default == "true", f.Usage)
 		} else {
 			vals[f.Name] = fs.String(f.Name, f.Default, f.Usage)
@@ -184,13 +192,28 @@ func Run(ctx context.Context, table []Command, args []string, stdout, stderr io.
 	}
 	// Commands may also take --json after the command name.
 	jsonFlag := fs.Bool("json", false, "")
-	if err := fs.Parse(rest); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			writeCommandHelp(stdout, cmd)
-			return ExitOK
+	// Flags may follow the positional arguments, as in smrit call <tool> --arg k=v.
+	// Everything after a bare -- is positional.
+	var positional []string
+	for {
+		if err := fs.Parse(rest); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				writeCommandHelp(stdout, cmd)
+				return ExitOK
+			}
+			msg := strings.TrimPrefix(err.Error(), "flag provided but not defined: ")
+			return usageError(stderr, "Unknown or invalid flag %s for smrit %s.", msg, cmd.Name)
 		}
-		msg := strings.TrimPrefix(err.Error(), "flag provided but not defined: ")
-		return usageError(stderr, "Unknown or invalid flag %s for smrit %s.", msg, cmd.Name)
+		left := fs.Args()
+		if len(left) == 0 {
+			break
+		}
+		if used := len(rest) - len(left); used > 0 && rest[used-1] == "--" {
+			positional = append(positional, left...)
+			break
+		}
+		positional = append(positional, left[0])
+		rest = left[1:]
 	}
 	fs.Visit(func(f *flag.Flag) {
 		if f.Name == "json" {
@@ -204,8 +227,8 @@ func Run(ctx context.Context, table []Command, args []string, stdout, stderr io.
 	for n, p := range bools {
 		flags[n] = fmt.Sprint(*p)
 	}
-	env := &Env{Stdout: stdout, Stderr: stderr, JSON: jsonMode, Flags: flags}
-	return cmd.Run(ctx, env, fs.Args())
+	env := &Env{Stdout: stdout, Stderr: stderr, JSON: jsonMode, Flags: flags, Lists: lists}
+	return cmd.Run(ctx, env, positional)
 }
 
 func writeHelp(w io.Writer, table []Command) {

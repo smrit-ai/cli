@@ -1,0 +1,91 @@
+package cli
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/smrit-ai/cli/internal/auth"
+	"github.com/smrit-ai/cli/internal/mcp"
+	"github.com/smrit-ai/cli/internal/profile"
+	"github.com/smrit-ai/cli/internal/server"
+	"github.com/smrit-ai/cli/internal/version"
+)
+
+// Services is everything a command reaches outside the process through, so a
+// test can stand a fake in for each. DefaultServices wires the real ones.
+type Services struct {
+	// Origin is the compiled server address.
+	Origin string
+	HTTP   *http.Client
+	Now    func() time.Time
+	Sleep  func(ctx context.Context, d time.Duration) error
+
+	Token       func(ctx context.Context, p profile.Profile) (string, error)
+	Login       func(ctx context.Context, o auth.LoginOptions) (profile.Profile, error)
+	Logout      func(ctx context.Context, p profile.Profile) error
+	Headless    func() (string, bool)
+	OpenBrowser func(url string) error
+}
+
+// DefaultServices is the real wiring.
+func DefaultServices() *Services {
+	return &Services{
+		Origin:      server.Address,
+		Token:       auth.AccessToken,
+		Login:       auth.Login,
+		Logout:      auth.Logout,
+		Headless:    auth.HeadlessToken,
+		OpenBrowser: auth.OpenSystemBrowser,
+	}
+}
+
+// Commands is the command table for the given services.
+func Commands(s *Services) []Command {
+	return []Command{loginCommand(s), logoutCommand(s), statusCommand(s), callCommand(s)}
+}
+
+var orgFlag = Flag{Name: "org", Usage: "The organization to use, when signed in to several."}
+
+// client builds the MCP client for the chosen profile, or for the headless
+// token on the bare endpoint. On failure it has already reported and returns
+// the exit code.
+func (s *Services) client(env *Env) (*mcp.Client, int) {
+	c := &mcp.Client{Origin: s.Origin, Version: version.Version, HTTP: s.HTTP, Now: s.Now, Sleep: s.Sleep}
+	if tok, ok := s.Headless(); ok {
+		c.Path = "/mcp"
+		c.Token = func(context.Context) (string, error) { return tok, nil }
+		return c, 0
+	}
+	p, err := profile.Pick(env.Flags["org"])
+	if err != nil {
+		return nil, report(env, err)
+	}
+	c.Path = p.Endpoint
+	c.Token = func(ctx context.Context) (string, error) { return s.Token(ctx, p) }
+	return c, 0
+}
+
+// report writes err as one sentence on stderr and returns its exit code.
+func report(env *Env, err error) int {
+	fmt.Fprintln(env.Stderr, err.Error())
+	return exitCode(err)
+}
+
+func exitCode(err error) int {
+	var te *mcp.ToolError
+	switch {
+	case errors.Is(err, profile.ErrSeveralProfiles):
+		return ExitUsage
+	case errors.Is(err, profile.ErrNoProfile), errors.Is(err, profile.ErrDamagedProfile),
+		errors.Is(err, auth.ErrNotSignedIn), errors.Is(err, mcp.ErrSignedOut):
+		return ExitNotSignedIn
+	case errors.As(err, &te), errors.Is(err, auth.ErrOrgMismatch), errors.Is(err, auth.ErrLoginFailed):
+		return ExitRefused
+	case errors.Is(err, mcp.ErrUpgrade):
+		return ExitUpgrade
+	}
+	return ExitUnavailable
+}

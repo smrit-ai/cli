@@ -8,7 +8,7 @@ import (
 )
 
 // commands is the table later tasks add to.
-var commands = []cli.Command{}
+var commands = cli.Commands(cli.DefaultServices())
 
 func main() {
 	os.Exit(cli.Main(commands, os.Args[1:]))
