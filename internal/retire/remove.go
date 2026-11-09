@@ -202,8 +202,9 @@ func (rm *remover) placeholder(rel string) (string, error) {
 }
 
 // putBack returns the moved file to its name, never over a file that took
-// the name meanwhile. It returns reason when the file is back, and a
-// sentence naming where it is kept when it could not be put back.
+// the name meanwhile. It returns reason, why the file is still here, when
+// the file is back, and the same reason with where it is kept when it could
+// not be put back.
 //
 // Only a hard link puts it back, because a link fails when the name is
 // taken. A rename would replace a file that took the name between a check
@@ -217,7 +218,7 @@ func (rm *remover) putBack(tmp, rel, reason string) string {
 		return reason
 	}
 	if errors.Is(err, fs.ErrExist) {
-		return fmt.Sprintf("it changed while retire ran and is kept as %s, because another file now has its name", tmp)
+		return fmt.Sprintf("%s and is kept as %s, because another file now has its name", reason, tmp)
 	}
-	return fmt.Sprintf("it changed while retire ran and is kept as %s, because this folder takes no hard link to put it back without risk of replacing another file", tmp)
+	return fmt.Sprintf("%s and is kept as %s, because this folder takes no hard link to put it back without risk of replacing another file", reason, tmp)
 }

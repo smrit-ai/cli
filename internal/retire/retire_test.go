@@ -1390,6 +1390,44 @@ func TestLeftoversListedNeverTouched(t *testing.T) {
 	}
 }
 
+// A file that could not be removed, and could not be put back either, is
+// kept under its temporary name, and the report gives the real reason: it
+// did not change while retire ran.
+func TestRemoveFailureWithoutPutBackSaysWhy(t *testing.T) {
+	isolate(t)
+	if os.Geteuid() == 0 {
+		t.Skip("a read only folder does not stop root")
+	}
+	root := realPath(t, t.TempDir())
+	f := newFixture(t, root)
+	f.done("a.md", "as imported\n")
+	f.rename = renameHook{after: func(old string) {
+		if filepath.Base(old) == "a.md" {
+			// The folder turns read only once the file is moved aside, so
+			// the unlink fails.
+			if err := os.Chmod(root, 0o555); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}}
+	t.Cleanup(func() { os.Chmod(root, 0o755) })
+	f.link = func(*os.Root, string, string) error { return errors.ErrUnsupported }
+	rep, err := f.retire(true)
+	var se *StoppedError
+	if !errors.As(err, &se) {
+		t.Fatalf("retire did not stop: %v %+v", err, rep)
+	}
+	r := leftReason(rep, "a.md")
+	if !strings.HasPrefix(r, "it could not be removed and is kept as .smrit-retire-") || strings.Contains(r, "changed") {
+		t.Fatalf("reason %q", r)
+	}
+	os.Chmod(root, 0o755)
+	kept := strings.TrimSuffix(strings.Fields(r[strings.Index(r, "kept as ")+len("kept as "):])[0], ",")
+	if content(t, filepath.Join(root, kept)) != "as imported\n" {
+		t.Errorf("the bytes are not at %s", kept)
+	}
+}
+
 // In a folder that takes no hard link, a file that must go back is left
 // under its temporary name: a rename back would replace whatever took the
 // name meanwhile. The report names where it is kept.
