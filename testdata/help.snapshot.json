@@ -99,6 +99,19 @@
       ]
     },
     {
+      "name": "retire",
+      "summary": "Remove the files a finished import moved into Smrit, zipping any git cannot restore. Without --apply it only reports: smrit retire <run> [--apply]",
+      "flags": [
+        {
+          "name": "apply",
+          "usage": "Remove the files. Without it nothing is touched.",
+          "default": "",
+          "bool": true,
+          "repeatable": false
+        }
+      ]
+    },
+    {
       "name": "scan",
       "summary": "List the files in folders with their git state, links and flags, never their contents: smrit scan <path>...",
       "flags": []

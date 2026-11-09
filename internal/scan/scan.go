@@ -109,7 +109,20 @@ type GitState struct {
 	// Pushed is whether the last commit touching the file is on the
 	// branch's upstream; null without an upstream or without a commit.
 	Pushed *bool `json:"pushed"`
+	// Unknown, for a file listed as outside, says why it may in fact be in
+	// a repository: one whose config names programs, one git could not
+	// read, or git missing. Empty means no repository holds it. It is not
+	// in the scan's JSON; retire reads it so it never treats such a file
+	// as outside every repository.
+	Unknown string `json:"-"`
 }
+
+// Why a file listed as outside may be in a repository after all.
+const (
+	UnknownNamesPrograms = "names_programs"
+	UnknownUnreadable    = "unreadable"
+	UnknownNoGit         = "no_git"
+)
 
 // Link is one inline Markdown link or image.
 type Link struct {
@@ -181,7 +194,7 @@ func Run(ctx context.Context, roots []string, opts Options) (Result, error) {
 	if g == nil {
 		res.Notes = append(res.Notes, noGitNote)
 	}
-	tops, flagged := repoTops(ctx, g, found)
+	tops, unknown, flagged := repoTops(ctx, g, found)
 	for _, dir := range flagged {
 		res.Notes = append(res.Notes, fmt.Sprintf("The repository holding %s names programs in its own git config, so smrit scan ran no git command there and lists its files as outside.", dir))
 	}
@@ -252,6 +265,14 @@ func Run(ctx context.Context, roots []string, opts Options) (Result, error) {
 			rel, _ := filepath.Rel(ri.top, w.abs)
 			f.Git = ri.state(filepath.ToSlash(rel))
 		}
+		switch {
+		case g == nil:
+			f.Git.Unknown = UnknownNoGit
+		case unknown[i] != "":
+			f.Git.Unknown = unknown[i]
+		case tops[i] != "" && repos[tops[i]] == nil:
+			f.Git.Unknown = UnknownUnreadable
+		}
 		text := f.Kind == KindDocument || f.Kind == KindWorkbook
 		if fx.secret {
 			f.Flags = append(f.Flags, FlagSecret)
@@ -297,34 +318,44 @@ func Run(ctx context.Context, roots []string, opts Options) (Result, error) {
 // config is read (namesPrograms, which runs nothing). A folder whose
 // repository names programs is outside, with everything under it, and is
 // returned in flagged; no other git command ever runs there.
-func repoTops(ctx context.Context, g *gitRunner, found []walked) (tops, flagged []string) {
+//
+// unknown says, for each file, why an outside file may be in a repository
+// after all: its repository names programs, or a .git git would not open.
+func repoTops(ctx context.Context, g *gitRunner, found []walked) (tops, unknown, flagged []string) {
 	tops = make([]string, len(found))
+	unknown = make([]string, len(found))
 	if g == nil {
-		return tops, nil
+		return tops, unknown, nil
 	}
-	memo := map[string]string{}
-	var of func(dir, root string) string
-	of = func(dir, root string) string {
-		if t, ok := memo[dir]; ok {
-			return t
+	type answer struct{ top, unknown string }
+	memo := map[string]answer{}
+	var of func(dir, root string) answer
+	of = func(dir, root string) answer {
+		if a, ok := memo[dir]; ok {
+			return a
 		}
-		var t string
+		var a answer
 		_, err := os.Lstat(filepath.Join(dir, ".git"))
 		switch {
 		case dir != root && err != nil:
-			t = of(filepath.Dir(dir), root)
+			a = of(filepath.Dir(dir), root)
 		case g.namesPrograms(ctx, dir):
 			flagged = append(flagged, dir)
+			a.unknown = UnknownNamesPrograms
 		default:
-			t = g.toplevel(ctx, dir)
+			a.top = g.toplevel(ctx, dir)
+			if a.top == "" && err == nil {
+				a.unknown = UnknownUnreadable
+			}
 		}
-		memo[dir] = t
-		return t
+		memo[dir] = a
+		return a
 	}
 	for i, w := range found {
-		tops[i] = of(filepath.Dir(w.abs), w.root)
+		a := of(filepath.Dir(w.abs), w.root)
+		tops[i], unknown[i] = a.top, a.unknown
 	}
-	return tops, flagged
+	return tops, unknown, flagged
 }
 
 // markUsed sets the used flag, one git grep per repository.

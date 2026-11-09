@@ -49,7 +49,7 @@ func DefaultServices() *Services {
 
 // Commands is the command table for the given services.
 func Commands(s *Services) []Command {
-	return []Command{loginCommand(s), logoutCommand(s), statusCommand(s), callCommand(s), scanCommand(), importCommand(s)}
+	return []Command{loginCommand(s), logoutCommand(s), statusCommand(s), callCommand(s), scanCommand(), importCommand(s), retireCommand()}
 }
 
 var orgFlag = Flag{Name: "org", Usage: "The organization to use, when signed in to several."}
