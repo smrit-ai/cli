@@ -126,17 +126,26 @@ func (c *Client) Login(ctx context.Context, opts LoginOptions) (profile.Profile,
 
 	verifier, challenge := pkce()
 	state := randomString(24)
-	query := url.Values{
-		"response_type":         {"code"},
-		"client_id":             {clientID},
-		"redirect_uri":          {redirectURI},
-		"code_challenge":        {challenge},
-		"code_challenge_method": {"S256"},
-		"scope":                 {"write"},
-		"state":                 {state},
-		"resource":              {resource},
+	authorize, err := url.Parse(meta.AuthorizationEndpoint)
+	if err != nil {
+		ln.Close()
+		return profile.Profile{}, fail(ErrLoginFailed, err, "Smrit published no usable authorization endpoint.")
 	}
-	authURL := meta.AuthorizationEndpoint + "?" + query.Encode()
+	query := authorize.Query()
+	for k, v := range map[string]string{
+		"response_type":         "code",
+		"client_id":             clientID,
+		"redirect_uri":          redirectURI,
+		"code_challenge":        challenge,
+		"code_challenge_method": "S256",
+		"scope":                 "write",
+		"state":                 state,
+		"resource":              resource,
+	} {
+		query.Set(k, v)
+	}
+	authorize.RawQuery = query.Encode()
+	authURL := authorize.String()
 
 	got, stop := serveCallback(ln, state)
 	defer stop()

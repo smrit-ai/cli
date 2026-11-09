@@ -371,9 +371,9 @@ func TestOnlyInvalidGrantSignsOut(t *testing.T) {
 		{"unreadable refusal", answer(400, `invalid_grant`), ErrUnavailable, false},
 		{"unreadable body", answer(200, `not json`), ErrUnavailable, false},
 		{"no token pair", answer(200, `{"access_token":"a"}`), ErrUnavailable, false},
-		{"timeout", func(cancel context.CancelFunc) func(int, http.ResponseWriter, *http.Request) bool {
+		{"timeout", func(context.CancelFunc) func(int, http.ResponseWriter, *http.Request) bool {
 			return func(_ int, _ http.ResponseWriter, r *http.Request) bool {
-				cancel() // the caller's deadline passes while the request is in flight
+				// No answer: the client gives up at its deadline and closes.
 				<-r.Context().Done()
 				return true
 			}
@@ -394,7 +394,13 @@ func TestOnlyInvalidGrantSignsOut(t *testing.T) {
 			f := newFake(t)
 			c := newClient(t, f)
 			p := seed(t, c, f)
-			ctx, cancel := context.WithTimeout(context.Background(), hang)
+			limit := hang
+			if tc.name == "timeout" {
+				// A deadline, not a cancel: a refresh once sent runs to its
+				// deadline. Five seconds leaves the two second budget intact.
+				limit = 5 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), limit)
 			defer cancel()
 			f.setOnRefresh(tc.handler(cancel))
 
@@ -519,6 +525,9 @@ func TestEndpointsMustBeOnTheCompiledAddress(t *testing.T) {
 	c := newClient(t, f)
 	p := seed(t, c, f)
 	p.TokenEndpoint = "https://elsewhere.example/oauth/token"
+	if err := profile.Save(p); err != nil { // the refresh reads the saved profile
+		t.Fatal(err)
+	}
 	if _, err := c.AccessToken(testContext(t), p); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("AccessToken: %v, want ErrUnavailable", err)
 	}

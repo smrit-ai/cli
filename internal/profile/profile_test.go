@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -113,5 +114,47 @@ func TestProfileFileIs0600(t *testing.T) {
 	}
 	if st.Mode().Perm() != 0o600 {
 		t.Fatalf("profiles file mode %o", st.Mode().Perm())
+	}
+}
+
+func TestTamperedProfileIsRefused(t *testing.T) {
+	cases := map[string]func(p *Profile){
+		"endpoint for another org": func(p *Profile) { p.Endpoint = EndpointPath("evil", orgID) },
+		"endpoint with navigation": func(p *Profile) { p.Endpoint = "/mcp/o/acme/../../steal" },
+		"endpoint on another host": func(p *Profile) { p.Endpoint = "https://evil.example/mcp" },
+		"org that is a path":       func(p *Profile) { p.Org = "../x"; p.Endpoint = EndpointPath(p.Org, p.OrgID) },
+		"org id of the wrong shape": func(p *Profile) {
+			p.OrgID = "short"
+			p.Endpoint = EndpointPath(p.Org, p.OrgID)
+		},
+	}
+	for name, tamper := range cases {
+		t.Run(name, func(t *testing.T) {
+			home(t)
+			if err := Save(sample("beta")); err != nil {
+				t.Fatal(err)
+			}
+			bad := sample("acme")
+			tamper(&bad)
+			path, _ := Path()
+			raw, _ := json.Marshal(file{Profiles: []Profile{bad, sample("beta")}})
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(); !errors.Is(err, ErrDamagedProfile) {
+				t.Fatalf("Load: %v, want ErrDamagedProfile", err)
+			}
+			for _, org := range []string{"", "acme", "beta"} {
+				if _, err := Pick(org); !errors.Is(err, ErrDamagedProfile) {
+					t.Fatalf("Pick(%q): %v, want ErrDamagedProfile", org, err)
+				}
+			}
+			if err := Remove(bad.Org); err != nil {
+				t.Fatalf("Remove the damaged profile: %v", err)
+			}
+			if p, err := Pick(""); err != nil || p.Org != "beta" {
+				t.Fatalf("after removing it: %+v, %v", p, err)
+			}
+		})
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -49,6 +50,13 @@ type fakeOAuth struct {
 	revokeStatus int
 	// busy receives a value for every GET /test/busy.
 	busy chan struct{}
+	// meta overrides discovery fields; resourceFor overrides the published
+	// resource for a path; refreshClients records each refresh's client_id;
+	// redirect, when set, answers that path with a 307 to its value.
+	meta           map[string]string
+	resourceFor    func(path string) string
+	refreshClients []string
+	redirect       map[string]string
 }
 
 func newFake(t *testing.T) *fakeOAuth {
@@ -73,22 +81,40 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func (f *fakeOAuth) serve(w http.ResponseWriter, r *http.Request) {
 	origin := f.srv.URL
+	f.mu.Lock()
+	to, redirected := f.redirect[r.URL.Path]
+	overrides := f.meta
+	resourceFor := f.resourceFor
+	f.mu.Unlock()
+	if redirected {
+		w.Header().Set("Location", to)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+		return
+	}
 	switch {
 	case r.URL.Path == "/.well-known/oauth-authorization-server":
-		writeJSON(w, 200, map[string]any{
+		meta := map[string]any{
 			"issuer":                           origin,
 			"authorization_endpoint":           origin + "/oauth/authorize",
 			"token_endpoint":                   origin + "/oauth/token",
 			"registration_endpoint":            origin + "/oauth/register",
 			"revocation_endpoint":              origin + "/oauth/revoke",
 			"code_challenge_methods_supported": []string{"S256"},
-		})
+		}
+		for k, v := range overrides {
+			meta[k] = v
+		}
+		writeJSON(w, 200, meta)
 	case strings.HasPrefix(r.URL.Path, "/.well-known/oauth-protected-resource"):
 		path := strings.TrimPrefix(r.URL.Path, "/.well-known/oauth-protected-resource")
 		if path == "" {
 			path = "/mcp"
 		}
-		writeJSON(w, 200, map[string]any{"resource": origin + path})
+		resource := origin + path
+		if resourceFor != nil {
+			resource = resourceFor(path)
+		}
+		writeJSON(w, 200, map[string]any{"resource": resource})
 	case r.URL.Path == "/oauth/register" && r.Method == http.MethodPost:
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
@@ -158,6 +184,7 @@ func (f *fakeOAuth) token(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, tokens)
 	case "refresh_token":
 		f.refreshCalls++
+		f.refreshClients = append(f.refreshClients, form.Get("client_id"))
 		n := f.refreshCalls
 		hook := f.onRefresh
 		f.mu.Unlock()
@@ -207,6 +234,13 @@ func (f *fakeOAuth) setOnRefresh(h func(n int, w http.ResponseWriter, r *http.Re
 	f.onRefresh = h
 }
 
+// set runs change under the fake's lock.
+func (f *fakeOAuth) set(change func(f *fakeOAuth)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	change(f)
+}
+
 func (f *fakeOAuth) setRevokeStatus(status int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -218,16 +252,18 @@ type seen struct {
 	registered              []map[string]any
 	revoked                 []url.Values
 	accessTokens, refreshes []string
+	refreshClients          []string
 }
 
 func (f *fakeOAuth) seen() seen {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return seen{
-		registered:   append([]map[string]any(nil), f.registered...),
-		revoked:      append([]url.Values(nil), f.revoked...),
-		accessTokens: append([]string(nil), f.accessTokens...),
-		refreshes:    append([]string(nil), f.refreshTokens...),
+		registered:     append([]map[string]any(nil), f.registered...),
+		revoked:        append([]url.Values(nil), f.revoked...),
+		accessTokens:   append([]string(nil), f.accessTokens...),
+		refreshes:      append([]string(nil), f.refreshTokens...),
+		refreshClients: append([]string(nil), f.refreshClients...),
 	}
 }
 
@@ -241,6 +277,36 @@ func (f *fakeOAuth) counts() (token, refresh int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.tokenCalls, f.refreshCalls
+}
+
+// elsewhere is a second server that must never be reached: it counts every
+// request and the body it carried.
+type elsewhere struct {
+	srv    *httptest.Server
+	mu     sync.Mutex
+	hits   int
+	bodies []string
+}
+
+func newElsewhere(t *testing.T) *elsewhere {
+	t.Helper()
+	e := &elsewhere{}
+	e.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		e.mu.Lock()
+		e.hits++
+		e.bodies = append(e.bodies, string(b))
+		e.mu.Unlock()
+		writeJSON(w, 200, map[string]any{"access_token": "stolen-a", "refresh_token": "stolen-r", "client_id": "stolen", "resource": "x"})
+	}))
+	t.Cleanup(e.srv.Close)
+	return e
+}
+
+func (e *elsewhere) count() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.hits
 }
 
 func verifyAs(slug, id string) func(context.Context, string) (string, string, error) {

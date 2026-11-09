@@ -47,6 +47,9 @@ var (
 	// ErrSeveralProfiles means no organization was named and there is more
 	// than one to choose from.
 	ErrSeveralProfiles = errors.New("Signed in to several organizations. Pass --org to choose one.")
+	// ErrDamagedProfile means a saved profile does not have the shape this
+	// CLI writes, so nothing in it is trusted.
+	ErrDamagedProfile = errors.New("A saved profile is damaged. Sign in again.")
 )
 
 // pickError carries a message that names the organizations, and still
@@ -104,13 +107,39 @@ func read(path string) ([]Profile, error) {
 	return f.Profiles, nil
 }
 
-// Load returns every profile, sorted by organization.
+// check refuses a profile that does not have the shape this CLI writes. The
+// endpoint is joined to the server address with a token on the request, so
+// it must be exactly the organization's own path, derived from a checked
+// slug and id, and never a stored string taken on trust.
+func check(p Profile) error {
+	if !ValidSlug(p.Org) || !ValidID(p.OrgID) || p.Endpoint != EndpointPath(p.Org, p.OrgID) {
+		name := p.Org
+		if !ValidSlug(name) {
+			name = "an organization"
+		}
+		return &pickError{ErrDamagedProfile, fmt.Sprintf(
+			"The saved profile for %s is damaged. Run smrit logout, or delete the profiles file, and sign in again.", name)}
+	}
+	return nil
+}
+
+// Load returns every profile, sorted by organization. If any profile is
+// damaged it returns ErrDamagedProfile and none of them.
 func Load() ([]Profile, error) {
 	path, err := Path()
 	if err != nil {
 		return nil, err
 	}
-	return read(path)
+	all, err := read(path)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range all {
+		if err := check(p); err != nil {
+			return nil, err
+		}
+	}
+	return all, nil
 }
 
 // Pick returns the profile for org. With org empty it returns the only
@@ -179,6 +208,9 @@ func Save(p Profile) error {
 	}
 	if !ValidID(p.OrgID) {
 		return errors.New("The organization id is not 21 letters and digits.")
+	}
+	if err := check(p); err != nil {
+		return err
 	}
 	return update(func(all []Profile) []Profile {
 		out := all[:0]

@@ -155,6 +155,16 @@ func (c *Client) AccessToken(ctx context.Context, p profile.Profile) (string, er
 	} else if fresh {
 		return tok, nil
 	}
+	// The profile as it is now, not the caller's copy: a login that finished
+	// while this waited has replaced the client and its token endpoint
+	// (oauth.py rereads its config inside the lock for the same reason).
+	p, err = profile.Pick(p.Org)
+	if errors.Is(err, profile.ErrNoProfile) {
+		return "", ErrNotSignedIn
+	}
+	if err != nil {
+		return "", fail(ErrUnavailable, err, "%v", err)
+	}
 	refresh, err := c.Store.Get(refreshKey(p.Org))
 	if errors.Is(err, store.ErrNotFound) {
 		return "", ErrNotSignedIn
@@ -170,7 +180,12 @@ func (c *Client) AccessToken(ctx context.Context, p profile.Profile) (string, er
 	if time.Until(deadline) < MinRefreshBudget {
 		return "", fail(ErrUnavailable, nil, "Too little time was left to refresh the sign in safely. Your sign in is kept; try again.")
 	}
-	t, err := c.postForm(ctx, p.TokenEndpoint, url.Values{
+	// Once sent, the server may rotate: a refresh abandoned on the caller's
+	// cancel would leave a spent token in the store, and presenting that
+	// kills the chain. So the request runs to the deadline, not the cancel.
+	sendCtx, cancelSend := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	defer cancelSend()
+	t, err := c.postForm(sendCtx, p.TokenEndpoint, url.Values{
 		"grant_type":    {"refresh_token"},
 		"refresh_token": {refresh},
 		"client_id":     {p.ClientID},

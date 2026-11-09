@@ -55,6 +55,8 @@ const (
 	early = 60 * time.Second
 	// maxBody bounds what is read from any OAuth response.
 	maxBody = 1 << 20
+	// RequestTimeout bounds one OAuth request whatever its context says.
+	RequestTimeout = 30 * time.Second
 )
 
 var (
@@ -95,7 +97,8 @@ type Client struct {
 	Server string
 	// Store keeps the tokens.
 	Store store.Store
-	// HTTP makes the requests. Nil means http.DefaultClient.
+	// HTTP makes the requests. Nil means a client with RequestTimeout. Its
+	// redirect policy is always replaced: see oauthHTTP.
 	HTTP *http.Client
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
@@ -140,11 +143,21 @@ func bounded(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, DefaultTimeout)
 }
 
+// http is the client every OAuth request goes through. It never follows a
+// redirect: on a 307 or 308 Go resends a POST body to the new location, which
+// would hand a refresh token, a code or a revocation to whatever host the
+// answer names. A redirect is returned as the response, and the caller treats
+// it as the failure it is.
 func (c *Client) http() *http.Client {
+	var hc http.Client
 	if c.HTTP != nil {
-		return c.HTTP
+		hc = *c.HTTP
 	}
-	return http.DefaultClient
+	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	if hc.Timeout == 0 {
+		hc.Timeout = RequestTimeout
+	}
+	return &hc
 }
 
 func (c *Client) now() time.Time {
@@ -264,6 +277,11 @@ func (c *Client) Logout(ctx context.Context, p profile.Profile) error {
 	}
 	defer unlock()
 
+	// The profile as it is now: a login that finished while this waited for
+	// the lock has replaced the client the caller's copy names.
+	if now, err := profile.Pick(p.Org); err == nil {
+		p = now
+	}
 	var revokeErr error
 	refresh, err := c.Store.Get(refreshKey(p.Org))
 	switch {
