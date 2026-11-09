@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/smrit-ai/cli/internal/mcp"
 	"github.com/smrit-ai/cli/internal/plan"
+	"github.com/smrit-ai/cli/internal/scan"
 	"github.com/smrit-ai/cli/internal/server"
 	"github.com/smrit-ai/cli/internal/state"
 )
@@ -50,10 +52,12 @@ var mimeRE = regexp.MustCompile(`^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0
 // retry through get_object's fresh URL. Each id is saved as soon as Smrit
 // gives it, so a resume finishes that object rather than making another.
 //
-// Objects have no slug, so with no run state nothing tells this CLI a file
-// was stored before: a rerun without --resume stores a second object and
-// reports it created. That is accepted; the server has no idempotency key
-// for objects.
+// Objects have no slug, so the only record of a file stored before is the
+// runs in the state directory. A rerun without --resume reuses the object a
+// finished run of the same folder stored in the same organization from the
+// same bytes, and reports it unchanged: a new object would change the id in
+// every document embedding it. With no such run, as from another machine,
+// a second object is stored; the server has no idempotency key for objects.
 func (r *runner) objects(es []plan.Entry) error {
 	for _, e := range es {
 		if err := r.ctx.Err(); err != nil {
@@ -99,6 +103,10 @@ func (r *runner) object(e plan.Entry) error {
 	id, upload := "", ""
 	if prev.ID != "" && prev.SourceSHA256 == e.SHA256 {
 		id = prev.ID
+	} else if stored := r.storedObject(e); stored != "" {
+		r.ix.ids[e.Path] = stored
+		r.record(e, state.EntryState{Kind: e.Kind, SourceSHA256: e.SHA256, Status: state.StatusUnchanged, ID: stored, Phase: r.st.Phase})
+		return nil
 	} else {
 		raw, err := r.o.MCP.Call(r.ctx, "create_object", map[string]any{"name": e.Name, "mime_type": ctype, "scope": e.Scope})
 		if err != nil {
@@ -148,6 +156,32 @@ func (r *runner) object(e plan.Entry) error {
 	}
 	r.objectFailed(e, reason, id)
 	return nil
+}
+
+// storedObject is the id of the object a finished run of the same folder,
+// in the same organization, stored from e's exact bytes at e's path, or "".
+// The newest such run wins. The finished runs are read once per run.
+func (r *runner) storedObject(e plan.Entry) string {
+	if r.stored == nil {
+		r.stored = map[[2]string]string{}
+		org := r.pr.org.ID
+		ids, _ := state.RunIDs(r.o.StateDir)
+		for _, id := range ids {
+			if org == "" || id == r.st.ID {
+				continue
+			}
+			run, err := state.LoadRun(r.o.StateDir, id)
+			if err != nil || run.Phase != state.PhaseFinished || run.Org.ID != org || filepath.Clean(run.Root) != filepath.Clean(r.p.Root) {
+				continue
+			}
+			for p, s := range run.Entries {
+				if s.Kind == scan.KindObject && state.Done(s.Status) && s.ID != "" && s.SourceSHA256 != "" {
+					r.stored[[2]string{p, s.SourceSHA256}] = s.ID
+				}
+			}
+		}
+	}
+	return r.stored[[2]string{e.Path, e.SHA256}]
 }
 
 // objectFailed keeps the id of an object whose bytes Smrit does not hold,

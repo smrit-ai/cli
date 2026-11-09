@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/smrit-ai/cli/internal/plan"
 	"github.com/smrit-ai/cli/internal/state"
@@ -225,6 +226,85 @@ func TestObjectResumeSkipsCreatedRerunMakesAnother(t *testing.T) {
 	again := mustRun(t, p, f.opts(t.TempDir()))
 	if e := entryOf(t, again, "logo.png"); e.Status != state.StatusCreated || e.ID == entryOf(t, first, "logo.png").ID {
 		t.Fatalf("%+v", e)
+	}
+}
+
+// at gives a run its own id, so several runs share one state directory.
+func at(o RunOptions, minute int) RunOptions {
+	o.Now = func() time.Time { return time.Date(2026, 11, 9, 15, minute, 0, 0, time.UTC) }
+	return o
+}
+
+// A rerun without --resume, in the same state directory, finds the object a
+// finished run of the same folder stored in the same organization from the
+// same bytes, and writes nothing: no new object, so no document embedding
+// it changes. A run of another organization, of another folder, or one that
+// never finished, is never looked at, and a changed file is a new object.
+func TestObjectRerunReusesAFinishedRunsObject(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "img/logo.png", pngBytes)
+	write(t, root, "a.md", "# A\n![Logo](img/logo.png)\n")
+	f := newStore(t)
+	p := docsPlan(root, "a.md")
+	p.Entries = append(p.Entries, objectEntry("img/logo.png"))
+	dir := t.TempDir()
+	first := mustRun(t, p, at(f.opts(dir), 0))
+	obj := entryOf(t, first, "img/logo.png")
+	if obj.Status != state.StatusCreated || obj.ID == "" {
+		t.Fatalf("%+v", obj)
+	}
+
+	revisions, commits := f.revisions(), len(f.commits)
+	second := mustRun(t, p, at(f.opts(dir), 1))
+	if second.Run == first.Run {
+		t.Fatal("the rerun resumed the first run")
+	}
+	for _, e := range second.Entries {
+		if e.Status != state.StatusUnchanged || e.ID != entryOf(t, first, e.Path).ID {
+			t.Errorf("rerun %+v", e)
+		}
+	}
+	if n, puts := len(f.toolCalls("create_object")), len(f.ext.puts); n != 1 || puts != 1 {
+		t.Fatalf("the rerun made %d objects and %d uploads", n, puts)
+	}
+	for slug, n := range revisions {
+		if got := f.revisions()[slug]; got != n {
+			t.Errorf("%s went from revision %d to %d", slug, n, got)
+		}
+	}
+	if len(f.commits)-commits != 1 {
+		t.Errorf("rerun made %d commits", len(f.commits)-commits)
+	}
+
+	// Only the first run, altered, in a state directory of its own.
+	saved, err := state.LoadRun(dir, first.Run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, alter := range map[string]func(*state.Run){
+		"another organization": func(r *state.Run) { r.Org.ID = "OtherOrgIdAbCdEfGhIjK" },
+		"another folder":       func(r *state.Run) { r.Root = filepath.Join(root, "elsewhere") },
+		"unfinished":           func(r *state.Run) { r.Phase = state.PhaseMap },
+	} {
+		run := *saved
+		alter(&run)
+		other := t.TempDir()
+		if err := state.SaveRun(other, &run); err != nil {
+			t.Fatal(err)
+		}
+		before := len(f.toolCalls("create_object"))
+		rep := mustRun(t, p, at(f.opts(other), 2))
+		if e := entryOf(t, rep, "img/logo.png"); e.Status != state.StatusCreated || e.ID == obj.ID || len(f.toolCalls("create_object")) != before+1 {
+			t.Errorf("%s: %+v", name, e)
+		}
+	}
+
+	// A changed file is stored as a new object.
+	write(t, root, "img/logo.png", pngBytes+"changed")
+	before := len(f.toolCalls("create_object"))
+	third := mustRun(t, p, at(f.opts(dir), 3))
+	if e := entryOf(t, third, "img/logo.png"); e.Status != state.StatusCreated || e.ID == obj.ID || len(f.toolCalls("create_object")) != before+1 {
+		t.Fatalf("changed: %+v", e)
 	}
 }
 

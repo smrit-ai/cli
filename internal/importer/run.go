@@ -105,6 +105,9 @@ type runner struct {
 	// findings are each document's link findings from its last rewrite.
 	findings map[string][]LinkFinding
 	mapError string
+	// stored is each object finished runs of this folder hold, by path and
+	// source hash; nil until the first object needs it.
+	stored map[[2]string]string
 }
 
 // Run imports a plan: objects, documents, workbooks, a second pass for the

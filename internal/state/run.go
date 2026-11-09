@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -128,6 +131,27 @@ func SaveRun(dir string, r *Run) error {
 		return fmt.Errorf("Could not save the import run: %v", err)
 	}
 	return nil
+}
+
+// RunIDs lists the ids of the runs kept under dir, oldest first. A missing
+// runs folder holds none.
+func RunIDs(dir string) ([]string, error) {
+	des, err := os.ReadDir(RunsDir(dir))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, de := range des {
+		id, ok := strings.CutSuffix(de.Name(), ".json")
+		if ok && de.Type().IsRegular() && runIDRE.MatchString(id) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 // LoadRun reads run id from dir.
