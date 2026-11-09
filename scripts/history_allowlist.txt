@@ -11,6 +11,7 @@ internal/importer/importer_test.go aws-access-key-id 56715bda8b2761f7f36066d4c89
 internal/importer/importer_test.go aws-access-key-id 62ff938a761f9d5aaafff6e581b7ae9e219baf1f
 internal/importer/importer_test.go aws-access-key-id 982ec1fdeabe93872523283d1e295b0abcee3833
 internal/importer/importer_test.go aws-access-key-id a35b1894623995323d5d013a6857dad2a10060dc
+internal/importer/objects_test.go url-credentials 24b1853b848daa7f48dcd4310a45847ed51535b8
 internal/importer/objects_test.go url-credentials 2fbf67e1b97f003593ccefb4af357a8ba61ff670
 internal/importer/objects_test.go url-credentials 409de0d94ba32fa69bd9143071591771ab9d5ead
 internal/importer/objects_test.go url-credentials c6cb4e718b06f12077157da3678a7e92276fcf38
@@ -25,11 +26,13 @@ internal/scan/scan.go password-assignment 9bc910d054a78d5159fccb609862b4882fc5bf
 internal/scan/scan.go password-assignment e95b45d046af76420a9f4f3c27bec13b2e31c14d
 internal/scan/scan_test.go aws-access-key-id 070173fe7fa020fc097e599edf33f39aa3aaffab
 internal/scan/scan_test.go aws-access-key-id 11d09599ea1ecd3954989a2297832aa816a3e908
+internal/scan/scan_test.go aws-access-key-id 58da8f9ffea44d463996832ae22f46f963415915
 internal/scan/scan_test.go aws-access-key-id 5d3ce061aa262005afb68ff4d0ccab298c4651c3
 internal/scan/scan_test.go aws-access-key-id 692f662986a8c76f0213d2b56997ff8edf937f7e
 internal/scan/scan_test.go aws-access-key-id d0f46dc30ca77fc0f3468e6ec62e69522d823226
 internal/scan/scan_test.go password-assignment 070173fe7fa020fc097e599edf33f39aa3aaffab
 internal/scan/scan_test.go password-assignment 11d09599ea1ecd3954989a2297832aa816a3e908
+internal/scan/scan_test.go password-assignment 58da8f9ffea44d463996832ae22f46f963415915
 internal/scan/scan_test.go password-assignment 5d3ce061aa262005afb68ff4d0ccab298c4651c3
 internal/scan/scan_test.go password-assignment 692f662986a8c76f0213d2b56997ff8edf937f7e
 internal/scan/scan_test.go password-assignment d0f46dc30ca77fc0f3468e6ec62e69522d823226

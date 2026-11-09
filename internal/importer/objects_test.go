@@ -308,6 +308,48 @@ func TestObjectRerunReusesAFinishedRunsObject(t *testing.T) {
 	}
 }
 
+// A rerun whose plan gives the object another scope or another type stores
+// a new object, and the document embeds the new one: the stored object is
+// not what the plan now asks for.
+func TestObjectRerunWithAnotherScopeOrTypeStoresANewObject(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "img/logo.png", pngBytes)
+	write(t, root, "a.md", "# A\n![Logo](img/logo.png)\n")
+	f := newStore(t)
+	p := docsPlan(root, "a.md")
+	p.Entries = append(p.Entries, objectEntry("img/logo.png"))
+	dir := t.TempDir()
+	first := mustRun(t, p, at(f.opts(dir), 0))
+	old := entryOf(t, first, "img/logo.png").ID
+
+	for i, change := range []struct {
+		name  string
+		alter func(*plan.PlanEntry)
+		check func(fakeCall) bool
+	}{
+		{"scope", func(e *plan.PlanEntry) { e.Scope = "document" }, func(c fakeCall) bool { return c.Args["scope"] == "document" }},
+		{"type", func(e *plan.PlanEntry) { e.Scope = "document"; e.Type = "image/x-custom" }, func(c fakeCall) bool { return c.Args["mime_type"] == "image/x-custom" }},
+	} {
+		q := p
+		q.Entries = append([]plan.PlanEntry{}, p.Entries...)
+		change.alter(&q.Entries[1])
+		before := len(f.toolCalls("create_object"))
+		rep := mustRun(t, q, at(f.opts(dir), i+1))
+		obj := entryOf(t, rep, "img/logo.png")
+		calls := f.toolCalls("create_object")
+		if obj.Status != state.StatusCreated || obj.ID == old || len(calls) != before+1 || !change.check(calls[len(calls)-1]) {
+			t.Fatalf("%s: %+v %+v", change.name, obj, calls)
+		}
+		f.mu.Lock()
+		body := f.docs["a"].Body
+		f.mu.Unlock()
+		if want := "# A\n![Logo](smrit:object/" + obj.ID + ")\n"; body != want {
+			t.Fatalf("%s: a.md holds %q, want %q", change.name, body, want)
+		}
+		old = obj.ID
+	}
+}
+
 func TestObjectTypeFromPlanOrExtension(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "a.png", pngBytes)

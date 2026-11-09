@@ -55,9 +55,10 @@ var mimeRE = regexp.MustCompile(`^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0
 // Objects have no slug, so the only record of a file stored before is the
 // runs in the state directory. A rerun without --resume reuses the object a
 // finished run of the same folder stored in the same organization from the
-// same bytes, and reports it unchanged: a new object would change the id in
-// every document embedding it. With no such run, as from another machine,
-// a second object is stored; the server has no idempotency key for objects.
+// same bytes, with the same scope and type, and reports it unchanged: a new
+// object would change the id in every document embedding it. With no such
+// run, as from another machine, a second object is stored; the server has
+// no idempotency key for objects.
 func (r *runner) objects(es []plan.Entry) error {
 	for _, e := range es {
 		if err := r.ctx.Err(); err != nil {
@@ -103,7 +104,7 @@ func (r *runner) object(e plan.Entry) error {
 	id, upload := "", ""
 	if prev.ID != "" && prev.SourceSHA256 == e.SHA256 {
 		id = prev.ID
-	} else if stored := r.storedObject(e); stored != "" {
+	} else if stored := r.storedObject(e, ctype); stored != "" {
 		r.ix.ids[e.Path] = stored
 		r.record(e, state.EntryState{Kind: e.Kind, SourceSHA256: e.SHA256, Status: state.StatusUnchanged, ID: stored, Phase: r.st.Phase})
 		return nil
@@ -159,11 +160,13 @@ func (r *runner) object(e plan.Entry) error {
 }
 
 // storedObject is the id of the object a finished run of the same folder,
-// in the same organization, stored from e's exact bytes at e's path, or "".
-// The newest such run wins. The finished runs are read once per run.
-func (r *runner) storedObject(e plan.Entry) string {
+// in the same organization, stored from e's exact bytes at e's path, with
+// the same scope and the same type, or "". An object of another scope or
+// type is not what the plan asks for now, so a new one is made. The newest
+// such run wins. The finished runs are read once per run.
+func (r *runner) storedObject(e plan.Entry, ctype string) string {
 	if r.stored == nil {
-		r.stored = map[[2]string]string{}
+		r.stored = map[storedKey]string{}
 		org := r.pr.org.ID
 		ids, _ := state.RunIDs(r.o.StateDir)
 		for _, id := range ids {
@@ -174,15 +177,31 @@ func (r *runner) storedObject(e plan.Entry) string {
 			if err != nil || run.Phase != state.PhaseFinished || run.Org.ID != org || filepath.Clean(run.Root) != filepath.Clean(r.p.Root) {
 				continue
 			}
-			for p, s := range run.Entries {
-				if s.Kind == scan.KindObject && state.Done(s.Status) && s.ID != "" && s.SourceSHA256 != "" {
-					r.stored[[2]string{p, s.SourceSHA256}] = s.ID
+			planned := map[string]plan.PlanEntry{}
+			for _, pe := range run.Plan.Entries {
+				if _, seen := planned[pe.Path]; !seen && pe.Kind == scan.KindObject {
+					planned[pe.Path] = pe
 				}
+			}
+			for p, s := range run.Entries {
+				pe, ok := planned[p]
+				if !ok || s.Kind != scan.KindObject || !state.Done(s.Status) || s.ID == "" || s.SourceSHA256 == "" {
+					continue
+				}
+				mt, ok := objectType(plan.Entry{PlanEntry: pe})
+				if !ok {
+					continue
+				}
+				r.stored[storedKey{p, s.SourceSHA256, pe.Scope, mt}] = s.ID
 			}
 		}
 	}
-	return r.stored[[2]string{e.Path, e.SHA256}]
+	return r.stored[storedKey{e.Path, e.SHA256, e.Scope, ctype}]
 }
+
+// storedKey is what an object must share with a plan entry to be reused:
+// path, source hash, scope and type.
+type storedKey struct{ path, sha, scope, mime string }
 
 // objectFailed keeps the id of an object whose bytes Smrit does not hold,
 // for a resume to finish it. It is no link target: a document refers only

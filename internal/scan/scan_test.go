@@ -455,7 +455,7 @@ func TestUsedRelativeToItsDocsFolder(t *testing.T) {
 		"docs/guide.md":     true, // guide.md, relative to docs
 		"docs/how/setup.md": true, // how/setup.md, relative to docs
 		"docs/how/other.md": false,
-		"docs/a.md":         false, // a.md is too short to search for
+		"docs/a.md":         false, // a.md, four characters, is searched and named nowhere
 	} {
 		if got := hasFlag(file(t, res, p), "used"); got != want {
 			t.Errorf("%s used = %v, want %v", p, got, want)
