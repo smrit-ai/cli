@@ -315,3 +315,52 @@ func TestTokenErrorPassesThrough(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestUnauthorizedThenOKRefreshesOnceAndRetriesWithTheNewToken(t *testing.T) {
+	f := newFake(t, func(n int, w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tok_NEW_456" {
+			w.WriteHeader(401)
+			return
+		}
+		ok(w, `{"structuredContent":{"fine":true}}`)
+	})
+	c := client(f, &clock{})
+	refreshes := 0
+	c.Refresh = func(context.Context) (string, error) { refreshes++; return "tok_NEW_456", nil }
+	got, err := c.Call(context.Background(), "t", nil)
+	if err != nil || string(got) != `{"fine":true}` {
+		t.Fatalf("%s %v", got, err)
+	}
+	if refreshes != 1 || f.hits != 2 {
+		t.Fatalf("%d refreshes, %d requests", refreshes, f.hits)
+	}
+}
+
+func TestUnauthorizedTwiceRefreshesOnceAndSignsOut(t *testing.T) {
+	f := newFake(t, func(n int, w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) })
+	c := client(f, &clock{})
+	refreshes := 0
+	c.Refresh = func(context.Context) (string, error) { refreshes++; return "tok_NEW_456", nil }
+	_, err := c.Call(context.Background(), "t", nil)
+	if !errors.Is(err, ErrSignedOut) || refreshes != 1 || f.hits != 2 {
+		t.Fatalf("%v, %d refreshes, %d requests", err, refreshes, f.hits)
+	}
+}
+
+func TestUnauthorizedWithoutRefreshIsFinal(t *testing.T) {
+	f := newFake(t, func(n int, w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) })
+	_, err := client(f, &clock{}).Call(context.Background(), "t", nil)
+	if !errors.Is(err, ErrSignedOut) || f.hits != 1 {
+		t.Fatalf("%v, %d requests", err, f.hits)
+	}
+}
+
+func TestRefreshFailureEndsTheCall(t *testing.T) {
+	f := newFake(t, func(n int, w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) })
+	c := client(f, &clock{})
+	boom := errors.New("not signed in")
+	c.Refresh = func(context.Context) (string, error) { return "", boom }
+	if _, err := c.Call(context.Background(), "t", nil); err != boom || f.hits != 1 {
+		t.Fatalf("%v, %d requests", err, f.hits)
+	}
+}

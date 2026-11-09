@@ -128,6 +128,12 @@ func Logout(ctx context.Context, p profile.Profile) error {
 	return Default().Logout(ctx, p)
 }
 
+// ForceRefresh refreshes the access token with the default client. See
+// Client.ForceRefresh.
+func ForceRefresh(ctx context.Context, p profile.Profile) (string, error) {
+	return Default().ForceRefresh(ctx, p)
+}
+
 // HeadlessToken returns the token in SMRIT_TOKEN and true when it is set. A
 // headless token is used as it is, for the bare /mcp endpoint, and only ever
 // sent to the compiled address: nothing stores it, refreshes it or sends it

@@ -23,7 +23,10 @@ type Services struct {
 	Now    func() time.Time
 	Sleep  func(ctx context.Context, d time.Duration) error
 
-	Token       func(ctx context.Context, p profile.Profile) (string, error)
+	Token func(ctx context.Context, p profile.Profile) (string, error)
+	// Refresh forces a new token after the server refused one. Nil in tests
+	// that never see a 401.
+	Refresh     func(ctx context.Context, p profile.Profile) (string, error)
 	Login       func(ctx context.Context, o auth.LoginOptions) (profile.Profile, error)
 	Logout      func(ctx context.Context, p profile.Profile) error
 	Headless    func() (string, bool)
@@ -35,6 +38,7 @@ func DefaultServices() *Services {
 	return &Services{
 		Origin:      server.Address,
 		Token:       auth.AccessToken,
+		Refresh:     auth.ForceRefresh,
 		Login:       auth.Login,
 		Logout:      auth.Logout,
 		Headless:    auth.HeadlessToken,
@@ -55,6 +59,10 @@ var orgFlag = Flag{Name: "org", Usage: "The organization to use, when signed in 
 func (s *Services) client(env *Env) (*mcp.Client, int) {
 	c := &mcp.Client{Origin: s.Origin, Version: version.Version, HTTP: s.HTTP, Now: s.Now, Sleep: s.Sleep}
 	if tok, ok := s.Headless(); ok {
+		if env.Flags["org"] != "" {
+			return nil, usageError(env.Stderr, "SMRIT_TOKEN and --org cannot be used together.")
+		}
+		fmt.Fprintln(env.Stderr, "Using the token in SMRIT_TOKEN.")
 		c.Path = "/mcp"
 		c.Token = func(context.Context) (string, error) { return tok, nil }
 		return c, 0
@@ -65,6 +73,9 @@ func (s *Services) client(env *Env) (*mcp.Client, int) {
 	}
 	c.Path = p.Endpoint
 	c.Token = func(ctx context.Context) (string, error) { return s.Token(ctx, p) }
+	if s.Refresh != nil {
+		c.Refresh = func(ctx context.Context) (string, error) { return s.Refresh(ctx, p) }
+	}
 	return c, 0
 }
 

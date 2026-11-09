@@ -538,3 +538,39 @@ func TestEndpointsMustBeOnTheCompiledAddress(t *testing.T) {
 		t.Fatal("refresh token not kept")
 	}
 }
+
+func TestForceRefreshRefreshesAFreshToken(t *testing.T) {
+	setHome(t)
+	f := newFake(t)
+	c := newClient(t, f)
+	p := seed(t, c, f)
+	ctx := testContext(t)
+	cached, err := c.AccessToken(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, before := f.counts()
+	tok, err := c.ForceRefresh(ctx, p)
+	if err != nil || tok == "" || tok == cached {
+		t.Fatalf("ForceRefresh = %q, %v; cached %q", tok, err, cached)
+	}
+	if _, n := f.counts(); n != before+1 {
+		t.Fatalf("%d refreshes after %d, want one more", n, before)
+	}
+	if got, err := c.AccessToken(ctx, p); err != nil || got != tok {
+		t.Fatalf("the cache does not hold the new token: %q %v", got, err)
+	}
+}
+
+func TestForceRefreshHeadlessHasNothingToRefresh(t *testing.T) {
+	setHome(t)
+	t.Setenv(HeadlessEnv, "tok_headless")
+	f := newFake(t)
+	c := newClient(t, f)
+	if _, err := c.ForceRefresh(testContext(t), profile.Profile{Org: "acme"}); !errors.Is(err, ErrNotSignedIn) {
+		t.Fatalf("%v", err)
+	}
+	if _, n := f.counts(); n != 0 {
+		t.Fatalf("%d refreshes", n)
+	}
+}

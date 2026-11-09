@@ -421,3 +421,88 @@ func TestStoppedContextPrintsASentence(t *testing.T) {
 		t.Fatalf("%d %q", code, errb.String())
 	}
 }
+
+func TestHeadlessTokenIsAnnouncedWithoutTheToken(t *testing.T) {
+	_, srv := newMCP(t)
+	svc := setup(t, srv)
+	svc.Headless = func() (string, bool) { return fakeToken, true }
+	code, out, errs := runCmd(t, svc, "status")
+	if code != ExitOK || !strings.Contains(errs, "Using the token in SMRIT_TOKEN.\n") {
+		t.Fatalf("%d %q", code, errs)
+	}
+	if strings.Contains(out, fakeToken) || strings.Contains(errs, fakeToken) {
+		t.Fatal("the token was printed")
+	}
+}
+
+func TestHeadlessTokenWithOrgIsRefused(t *testing.T) {
+	f, srv := newMCP(t)
+	svc := setup(t, srv, prof("acme", orgID))
+	svc.Headless = func() (string, bool) { return fakeToken, true }
+	for _, cmd := range []string{"status", "call"} {
+		args := []string{cmd, "--org", "acme"}
+		if cmd == "call" {
+			args = []string{"call", "start", "--org", "acme"}
+		}
+		code, out, errs := runCmd(t, svc, args...)
+		if code != ExitUsage || !strings.Contains(errs, "SMRIT_TOKEN and --org cannot be used together.") {
+			t.Fatalf("%s: %d %q", cmd, code, errs)
+		}
+		if strings.Contains(out, fakeToken) || strings.Contains(errs, fakeToken) {
+			t.Fatal("the token was printed")
+		}
+	}
+	if len(f.paths) != 0 {
+		t.Fatal("nothing should be sent")
+	}
+}
+
+func TestUnauthorizedRefreshesOnceThenSucceeds(t *testing.T) {
+	f, srv := newMCP(t)
+	svc := setup(t, srv, prof("acme", orgID))
+	refreshes := 0
+	f.mu.Lock()
+	f.status = 401
+	f.mu.Unlock()
+	// The fake has one status for every request, so the refresh lifts it.
+	svc.Refresh = func(context.Context, profile.Profile) (string, error) {
+		refreshes++
+		f.mu.Lock()
+		f.status = 0
+		f.mu.Unlock()
+		return "tok_NEW", nil
+	}
+	code, _, errs := runCmd(t, svc, "status")
+	if code != ExitOK || refreshes != 1 || len(f.auths) != 2 || f.auths[1] != "Bearer tok_NEW" {
+		t.Fatalf("%d %q %d %v", code, errs, refreshes, f.auths)
+	}
+}
+
+func TestUnauthorizedTwiceExits3AfterOneRefresh(t *testing.T) {
+	f, srv := newMCP(t)
+	svc := setup(t, srv, prof("acme", orgID))
+	refreshes := 0
+	svc.Refresh = func(context.Context, profile.Profile) (string, error) { refreshes++; return "tok_NEW", nil }
+	f.mu.Lock()
+	f.status = 401
+	f.mu.Unlock()
+	code, _, _ := runCmd(t, svc, "status")
+	if code != ExitNotSignedIn || refreshes != 1 || len(f.auths) != 2 {
+		t.Fatalf("%d %d %v", code, refreshes, f.auths)
+	}
+}
+
+func TestHeadlessUnauthorizedExits3WithoutRefresh(t *testing.T) {
+	f, srv := newMCP(t)
+	svc := setup(t, srv)
+	svc.Headless = func() (string, bool) { return fakeToken, true }
+	refreshes := 0
+	svc.Refresh = func(context.Context, profile.Profile) (string, error) { refreshes++; return "x", nil }
+	f.mu.Lock()
+	f.status = 401
+	f.mu.Unlock()
+	code, _, _ := runCmd(t, svc, "status")
+	if code != ExitNotSignedIn || refreshes != 0 || len(f.auths) != 1 {
+		t.Fatalf("%d %d %v", code, refreshes, f.auths)
+	}
+}

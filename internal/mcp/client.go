@@ -64,7 +64,10 @@ type Client struct {
 	Version string
 	// Token returns the bearer token for one call.
 	Token func(ctx context.Context) (string, error)
-	HTTP  *http.Client
+	// Refresh forces a new token after a 401. Nil means there is nothing to
+	// refresh (a headless token), and a 401 is final.
+	Refresh func(ctx context.Context) (string, error)
+	HTTP    *http.Client
 	// Now and Sleep are the clock; nil means the real ones.
 	Now   func() time.Time
 	Sleep func(ctx context.Context, d time.Duration) error
@@ -191,13 +194,18 @@ func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (js
 	if err != nil {
 		return nil, fmt.Errorf("The arguments could not be encoded: %v", err)
 	}
+	refreshed := false
+	var forced string
 	for attempt := 0; ; attempt++ {
 		if err := c.pace(ctx); err != nil {
 			return nil, err
 		}
-		tok, err := c.Token(ctx)
-		if err != nil {
-			return nil, err
+		tok := forced
+		if !refreshed {
+			var err error
+			if tok, err = c.Token(ctx); err != nil {
+				return nil, err
+			}
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Origin+c.Path, bytes.NewReader(body))
 		if err != nil {
@@ -226,7 +234,15 @@ func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (js
 			}
 			continue
 		case resp.StatusCode == http.StatusUnauthorized:
-			return nil, ErrSignedOut
+			// One forced refresh and one retry, never more.
+			if c.Refresh == nil || refreshed {
+				return nil, ErrSignedOut
+			}
+			refreshed = true
+			if forced, err = c.Refresh(ctx); err != nil {
+				return nil, err
+			}
+			continue
 		case resp.StatusCode == http.StatusUpgradeRequired:
 			return nil, ErrUpgrade
 		case resp.StatusCode != http.StatusOK || rerr != nil:
