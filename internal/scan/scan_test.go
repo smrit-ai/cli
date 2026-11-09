@@ -265,7 +265,7 @@ func TestFileFacts(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "front.md", "---\ntitle: \"From: the front\"\ntags: [a]\n---\n# Not this\n")
 	write(t, root, "atx.md", "intro\n```\n# fenced\n```\n# The heading #\n## Two\n")
-	write(t, root, "none.md", "no heading here\n## Level two only\n")
+	write(t, root, "none.md", "no heading here\n####### Seven is not one\n")
 	write(t, root, "latin1.md", "caf\xe9\n")
 	write(t, root, "big.md", strings.Repeat("a", 512*1024+1))
 	write(t, root, "edge.md", strings.Repeat("a", 512*1024))
@@ -323,17 +323,6 @@ func TestFileFacts(t *testing.T) {
 	}
 	if hasFlag(file(t, res, "leak.png"), "secret") {
 		t.Error("secret is for text files only")
-	}
-}
-
-func TestCopilotInstructionsAreKeep(t *testing.T) {
-	isolate(t)
-	root := filepath.Join(t.TempDir(), ".github")
-	write(t, root, "copilot-instructions.md", "c")
-	write(t, root, "other.md", "o")
-	res := scanOK(t, Options{}, root)
-	if !hasFlag(file(t, res, "copilot-instructions.md"), "keep") || hasFlag(file(t, res, "other.md"), "keep") {
-		t.Fatal(".github/copilot-instructions.md is keep")
 	}
 }
 

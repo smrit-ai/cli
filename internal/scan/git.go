@@ -49,12 +49,14 @@ func newGit(bin string) *gitRunner {
 
 // run calls git in dir and returns its standard output and exit code. The
 // config overrides keep a repository's own settings from changing the
-// output's shape, and core.fsmonitor off means no hook program a repository
-// names is ever run by a scan.
+// output's shape; core.fsmonitor and log.showSignature off mean git starts
+// no fsmonitor hook and no gpg.program. Filters and the rest are handled by
+// refusing the repository first (see namesPrograms).
 func (g *gitRunner) run(ctx context.Context, dir string, args ...string) ([]byte, int, error) {
 	full := append([]string{
 		"-C", dir,
 		"-c", "core.fsmonitor=false",
+		"-c", "log.showSignature=false",
 		"-c", "core.quotepath=off",
 		"-c", "color.ui=never",
 		"-c", "color.grep=never",
@@ -94,6 +96,32 @@ func (g *gitRunner) toplevel(ctx context.Context, dir string) string {
 	return top
 }
 
+// programConfig matches the config keys that make git start a program
+// during a read: filters run by status, fsmonitor, signature programs run
+// by log, hooks, textconv and external diff. git config itself runs nothing.
+const programConfig = `^(filter\..*\.(clean|process|smudge)|.*\.program|core\.fsmonitor|core\.hookspath|diff\..*\.(textconv|command))$`
+
+// namesPrograms reports whether the repository's own config (its local and
+// worktree files, and any file they include) sets a key that makes git run
+// a program. Such a repository may have been planted to run code when it is
+// scanned, so no other git command runs in it. The user's global and system
+// config are their own choice (git-lfs puts its filters there) and do not
+// count. A config git cannot read counts as naming programs.
+func (g *gitRunner) namesPrograms(ctx context.Context, top string) bool {
+	out, code, err := g.run(ctx, top, "config", "--show-scope", "--includes", "-z", "--get-regexp", programConfig)
+	if err != nil || (code != 0 && code != 1) {
+		return true
+	}
+	// Each entry is scope NUL name LF value NUL.
+	fields := strings.Split(string(out), "\x00")
+	for i := 0; i+1 < len(fields); i += 2 {
+		if scope := fields[i]; scope == "local" || scope == "worktree" {
+			return true
+		}
+	}
+	return false
+}
+
 // repoInfo is what one status, one ls-files and the upstream comparison
 // say about a repository.
 type repoInfo struct {
@@ -105,6 +133,7 @@ type repoInfo struct {
 	unpushed  map[string]bool // paths touched by commits not on the upstream
 	scope     []string        // pathspecs limiting status and ls-files, empty for all
 	statusErr bool
+	programs  bool // the repository's config names programs; nothing else was run
 }
 
 // loadRepo reads the repository's state. scope limits it to the scanned
@@ -112,6 +141,10 @@ type repoInfo struct {
 func (g *gitRunner) loadRepo(ctx context.Context, top string, scope []string) *repoInfo {
 	ri := &repoInfo{top: top, tracked: map[string]bool{}, changed: map[string]string{}, ignored: map[string]bool{}, unpushed: map[string]bool{}, scope: scope}
 	spec := pathspecs(scope)
+	if g.namesPrograms(ctx, top) {
+		ri.programs = true
+		return ri
+	}
 
 	out, code, err := g.run(ctx, top, append([]string{"status", "--porcelain=v1", "-z", "--ignored", "--untracked-files=all"}, spec...)...)
 	if err != nil || code != 0 {

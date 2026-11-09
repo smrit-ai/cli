@@ -1,9 +1,11 @@
 package scan
 
 import (
+	"math/bits"
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -44,7 +46,7 @@ func isFenceClose(line, fence string) bool {
 
 // fencedRanges are the byte ranges of body inside fenced code blocks,
 // fence lines included. A fence never closed runs to the end.
-func fencedRanges(body string) [][2]int {
+func fencedRanges(body string, work *int) [][2]int {
 	var out [][2]int
 	fence, start := "", 0
 	for off := 0; off < len(body); {
@@ -53,6 +55,7 @@ func fencedRanges(body string) [][2]int {
 		if end >= 0 {
 			next = off + end + 1
 		}
+		*work += next - off
 		line := strings.TrimLeft(strings.TrimRight(body[off:next], "\r\n"), " \t")
 		if fence == "" {
 			if f := fenceOpen(line); f != "" {
@@ -70,49 +73,22 @@ func fencedRanges(body string) [][2]int {
 	return out
 }
 
-// linkScanner walks body, skipping fences and code spans.
+// linkScanner finds the links in a body. It works on one stretch between
+// fences at a time, so no position it visits is inside a fence. Code spans
+// and bracket pairs are found first, in one pass each, so the link pass
+// only looks them up: the parse is linear in the body's size, whatever the
+// body holds. work counts every step of every loop, so a test can check
+// that without timing anything.
 type linkScanner struct {
-	body   string
-	fences [][2]int
-}
-
-// fenceAt returns the end of the fence holding i, or -1.
-func (s *linkScanner) fenceAt(i int) int {
-	for _, f := range s.fences {
-		if i >= f[0] && i < f[1] {
-			return f[1]
-		}
-	}
-	return -1
-}
-
-// codeSpanEnd returns the index just past the code span opening at i (a run
-// of backticks), or, when the run is never closed, just past the run, with
-// ok false.
-func (s *linkScanner) codeSpanEnd(i int) (int, bool) {
-	b := s.body
-	n := 0
-	for i+n < len(b) && b[i+n] == '`' {
-		n++
-	}
-	for j := i + n; j < len(b); {
-		if b[j] != '`' {
-			if s.fenceAt(j) >= 0 {
-				break
-			}
-			j++
-			continue
-		}
-		m := 0
-		for j+m < len(b) && b[j+m] == '`' {
-			m++
-		}
-		if m == n {
-			return j + m, true
-		}
-		j += m
-	}
-	return i + n, false
+	body string
+	// codeEnd maps the start of a backtick run to the end of its code span,
+	// or to the end of the run when it opens none.
+	codeEnd map[int]int
+	// closeOf maps a [ to its matching ].
+	closeOf map[int]int
+	// at lists the positions of each byte a title can end with.
+	at   map[byte][]int
+	work int
 }
 
 // rawLink is one link as written, before it is resolved.
@@ -121,44 +97,116 @@ type rawLink struct {
 	image        bool
 }
 
-// scan finds the links in body[from:to].
-func (s *linkScanner) scan(from, to int) []rawLink {
+// maxDestinationParens bounds the nesting of parentheses in a link
+// destination, as CommonMark allows, so a destination scan never runs on
+// through the rest of a long line.
+const maxDestinationParens = 32
+
+// prepare finds the code spans and bracket pairs in body[from:to].
+func (s *linkScanner) prepare(from, to int) {
 	b := s.body
-	var out []rawLink
+	type run struct{ start, end int }
+	var runs []run
 	for i := from; i < to; {
-		if end := s.fenceAt(i); end >= 0 {
-			i = end
-			continue
-		}
-		switch c := b[i]; {
-		case c == '\\':
+		s.work++
+		switch b[i] {
+		case '\\':
 			i += 2
-		case c == '`':
-			i, _ = s.codeSpanEnd(i)
-		case c == '[' || (c == '!' && i+1 < to && b[i+1] == '['):
-			image := c == '!'
-			open := i
-			if image {
-				open++
+		case '`':
+			j := i
+			for j < to && b[j] == '`' {
+				s.work++
+				j++
 			}
-			l, next, ok := s.link(open, to)
-			if !ok {
-				i = open + 1
-				continue
-			}
-			l.image = image
-			out = append(out, l)
-			if !image {
-				// An image inside a link's text, as in a badge, is a link too.
-				out = append(out, s.scan(open+1, open+1+len(l.text))...)
-			}
-			i = next
+			runs = append(runs, run{i, j})
+			i = j
 		default:
 			i++
 		}
 	}
-	for k := range out {
-		out[k].text = strings.TrimSpace(out[k].text)
+	// A run opens a code span closed by the next run of the same length.
+	next := make([]int, len(runs))
+	last := map[int]int{}
+	for k := len(runs) - 1; k >= 0; k-- {
+		s.work++
+		n := runs[k].end - runs[k].start
+		next[k] = -1
+		if j, ok := last[n]; ok {
+			next[k] = j
+		}
+		last[n] = k
+	}
+	for k := 0; k < len(runs); {
+		s.work++
+		if j := next[k]; j >= 0 {
+			s.codeEnd[runs[k].start] = runs[j].end
+			k = j + 1
+		} else {
+			s.codeEnd[runs[k].start] = runs[k].end
+			k++
+		}
+	}
+	var stack []int
+	for i := from; i < to; {
+		s.work++
+		switch b[i] {
+		case '\\':
+			i += 2
+			continue
+		case '`':
+			if e, ok := s.codeEnd[i]; ok {
+				i = e
+				continue
+			}
+		case '[':
+			stack = append(stack, i)
+		case ']':
+			if len(stack) > 0 {
+				s.closeOf[stack[len(stack)-1]] = i
+				stack = stack[:len(stack)-1]
+			}
+		}
+		i++
+	}
+}
+
+// scan finds the links in body[from:to]. Inside a link's text only images
+// count (a badge), since a link cannot hold another link.
+func (s *linkScanner) scan(from, to int, imagesOnly bool) []rawLink {
+	b := s.body
+	var out []rawLink
+	for i := from; i < to; {
+		s.work++
+		switch c := b[i]; {
+		case c == '\\':
+			i += 2
+		case c == '`':
+			if e, ok := s.codeEnd[i]; ok && e > i {
+				i = e
+			} else {
+				i++
+			}
+		case c == '!' && i+1 < to && b[i+1] == '[':
+			l, next, ok := s.link(i+1, to)
+			if !ok {
+				i += 2
+				continue
+			}
+			l.image = true
+			out = append(out, l)
+			i = next
+		case c == '[' && !imagesOnly:
+			l, next, ok := s.link(i, to)
+			if !ok {
+				i++
+				continue
+			}
+			out = append(out, l)
+			out = append(out, s.scan(i+1, i+1+len(l.text), true)...)
+			i = next
+		default:
+			i++
+		}
 	}
 	return out
 }
@@ -167,50 +215,28 @@ func (s *linkScanner) scan(from, to int) []rawLink {
 // link and the index just past it.
 func (s *linkScanner) link(open, to int) (rawLink, int, bool) {
 	b := s.body
-	depth := 0
-	i := open
-	closeAt := -1
-	for i < to {
-		if s.fenceAt(i) >= 0 {
-			return rawLink{}, 0, false
-		}
-		switch b[i] {
-		case '\\':
-			i += 2
-			continue
-		case '`':
-			if end, ok := s.codeSpanEnd(i); ok {
-				i = end
-				continue
-			}
-		case '[':
-			depth++
-		case ']':
-			depth--
-		}
-		if depth == 0 {
-			closeAt = i
-			break
-		}
-		i++
-	}
-	if closeAt < 0 || closeAt+1 >= to || b[closeAt+1] != '(' {
+	closeAt, ok := s.closeOf[open]
+	if !ok || closeAt+1 >= to || b[closeAt+1] != '(' {
 		return rawLink{}, 0, false
 	}
 	text := b[open+1 : closeAt]
-	i = closeAt + 2
-	i = skipSpace(b, i, to)
+	i := s.skipSpace(closeAt+2, to)
 	var target string
 	if i < to && b[i] == '<' {
-		end := strings.IndexAny(b[i+1:to], "<>\n")
-		if end < 0 || b[i+1+end] != '>' {
+		j := i + 1
+		for j < to && b[j] != '<' && b[j] != '>' && b[j] != '\n' {
+			s.work++
+			j++
+		}
+		if j >= to || b[j] != '>' {
 			return rawLink{}, 0, false
 		}
-		target = b[i+1 : i+1+end]
-		i = i + 1 + end + 1
+		target = b[i+1 : j]
+		i = j + 1
 	} else {
 		start, parens := i, 0
 		for i < to {
+			s.work++
 			c := b[i]
 			if c == '\\' && i+1 < to {
 				i += 2
@@ -220,7 +246,9 @@ func (s *linkScanner) link(open, to int) (rawLink, int, bool) {
 				break
 			}
 			if c == '(' {
-				parens++
+				if parens++; parens > maxDestinationParens {
+					return rawLink{}, 0, false
+				}
 			} else if c == ')' {
 				if parens == 0 {
 					break
@@ -231,17 +259,17 @@ func (s *linkScanner) link(open, to int) (rawLink, int, bool) {
 		}
 		target = b[start:i]
 	}
-	i = skipSpace(b, i, to)
+	i = s.skipSpace(i, to)
 	if i < to && (b[i] == '"' || b[i] == '\'' || b[i] == '(') {
 		closer := b[i]
 		if closer == '(' {
 			closer = ')'
 		}
-		end := strings.IndexByte(b[i+1:to], closer)
-		if end < 0 {
+		end := s.nextAt(closer, i+1)
+		if end < 0 || end >= to {
 			return rawLink{}, 0, false
 		}
-		i = skipSpace(b, i+1+end+1, to)
+		i = s.skipSpace(end+1, to)
 	}
 	if i >= to || b[i] != ')' {
 		return rawLink{}, 0, false
@@ -249,10 +277,24 @@ func (s *linkScanner) link(open, to int) (rawLink, int, bool) {
 	return rawLink{text: text, target: unescape(target)}, i + 1, true
 }
 
+// nextAt is the first position at or after from holding c, or -1, found by
+// binary search in the positions listed once for the whole body.
+func (s *linkScanner) nextAt(c byte, from int) int {
+	list := s.at[c]
+	s.work += bits.Len(uint(len(list))) + 1
+	k := sort.SearchInts(list, from)
+	if k == len(list) {
+		return -1
+	}
+	return list[k]
+}
+
 // skipSpace skips spaces and tabs and at most one line ending.
-func skipSpace(b string, i, to int) int {
+func (s *linkScanner) skipSpace(i, to int) int {
+	b := s.body
 	newline := false
 	for i < to {
+		s.work++
 		switch b[i] {
 		case ' ', '\t':
 		case '\r':
@@ -289,17 +331,37 @@ var schemeRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.\-]{1,31}:`)
 // parseLinks returns the links in a Markdown body, resolved against rel,
 // the file's root relative path.
 func parseLinks(body, rel string) []Link {
-	s := &linkScanner{body: body, fences: fencedRanges(body)}
-	raw := s.scan(0, len(body))
+	l, _ := parseLinksCounting(body, rel)
+	return l
+}
+
+// parseLinksCounting is parseLinks, also returning how many steps it took.
+func parseLinksCounting(body, rel string) ([]Link, int) {
+	s := &linkScanner{body: body, codeEnd: map[int]int{}, closeOf: map[int]int{}, at: map[byte][]int{}}
+	for i := 0; i < len(body); i++ {
+		s.work++
+		if c := body[i]; c == '"' || c == '\'' || c == ')' {
+			s.at[c] = append(s.at[c], i)
+		}
+	}
+	var raw []rawLink
+	from := 0
+	for _, f := range append(fencedRanges(body, &s.work), [2]int{len(body), len(body)}) {
+		if f[0] > from {
+			s.prepare(from, f[0])
+			raw = append(raw, s.scan(from, f[0], false)...)
+		}
+		from = f[1]
+	}
 	links := make([]Link, 0, len(raw))
 	for _, r := range raw {
 		links = append(links, resolveLink(r, rel))
 	}
-	return links
+	return links, s.work
 }
 
 func resolveLink(r rawLink, rel string) Link {
-	l := Link{Text: r.text, Target: r.target, Image: r.image}
+	l := Link{Text: capText(strings.TrimSpace(r.text)), Target: r.target, Image: r.image}
 	p := r.target
 	if i := strings.IndexByte(p, '#'); i >= 0 {
 		l.Anchor = p[i:]

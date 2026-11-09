@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/smrit-ai/cli/internal/scan"
 )
@@ -21,28 +24,41 @@ func (o scanOutput) String() string {
 	for i, r := range o.Roots {
 		roots[i] = r.Path
 	}
-	fmt.Fprintf(&b, "%d files in %s\n", len(o.Files), strings.Join(roots, ", "))
+	fmt.Fprintf(&b, "%d files in %s\n", len(o.Files), printable(strings.Join(roots, ", ")))
 	for _, f := range o.Files {
 		name := f.Path
 		if len(o.Roots) > 1 {
 			name = path.Join(f.Root, f.Path)
 		}
-		line := fmt.Sprintf("%s  %s  %s", name, f.Kind, f.Git.State)
+		line := fmt.Sprintf("%s  %s  %s", printable(name), f.Kind, f.Git.State)
 		if len(f.Flags) > 0 {
 			line += "  " + strings.Join(f.Flags, ", ")
 		}
 		b.WriteString(line + "\n")
 	}
 	for _, s := range o.Skipped {
-		fmt.Fprintf(&b, "Skipped %s: %s\n", s.Path, s.Reason)
+		fmt.Fprintf(&b, "Skipped %s: %s\n", printable(s.Path), s.Reason)
 	}
 	if o.Truncated {
 		fmt.Fprintf(&b, "Stopped at %d files; scan a smaller folder to see the rest.\n", len(o.Files))
 	}
 	for _, n := range o.Notes {
-		b.WriteString(n + "\n")
+		b.WriteString(printable(n) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// printable shows s as it is, or quoted with Go escapes when it holds a
+// control or format character (a terminal escape, a bidirectional override)
+// or is not UTF-8: a file name is untrusted, and the text goes to a terminal.
+func printable(s string) string {
+	if utf8.ValidString(s) && !strings.ContainsFunc(s, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	}) {
+		return s
+	}
+	q := strconv.Quote(s)
+	return q[1 : len(q)-1]
 }
 
 func scanCommand() Command {

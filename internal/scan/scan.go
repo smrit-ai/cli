@@ -212,6 +212,10 @@ func Run(ctx context.Context, roots []string, opts Options) (Result, error) {
 			scope = nil
 		}
 		ri := g.loadRepo(ctx, top, scope)
+		if ri.programs {
+			res.Notes = append(res.Notes, fmt.Sprintf("The repository at %s names programs in its own git config, so smrit scan ran no git command there and lists its files as outside.", top))
+			continue
+		}
 		if ri.statusErr {
 			res.Notes = append(res.Notes, fmt.Sprintf("git could not read the repository at %s, so its files are listed as outside.", top))
 			continue

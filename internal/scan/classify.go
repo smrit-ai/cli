@@ -106,9 +106,14 @@ var errNotRegular = errors.New("not a regular file")
 // readFacts reads the file once, streaming: its hash, whether it is text,
 // whether it is valid UTF-8, and whether any window holds a secret. A file
 // is scanned for secrets when its start has no NUL byte, or always when
-// textByName says its name makes it a document or workbook. The open
-// refuses a symbolic link, so a file swapped for one after the walk is not
-// followed either.
+// textByName says its name makes it a document or workbook.
+//
+// O_NOFOLLOW covers only the last component of the path: a file swapped
+// for a symbolic link after the walk is refused, but a parent folder
+// swapped for one is followed. That needs a local process racing the scan
+// with write access to the folder, which is out of scope. O_NONBLOCK means
+// a FIFO swapped in after the walk cannot block the open; the walk already
+// skips every file that is not regular.
 func readFacts(abs string, keepBody, textByName bool) (facts, error) {
 	var fx facts
 	f, err := os.OpenFile(abs, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
@@ -207,8 +212,27 @@ func (u *utf8Stream) Write(p []byte) {
 
 func (u *utf8Stream) Valid() bool { return !u.bad && len(u.carry) == 0 }
 
-// headingOf is the front matter title, else the first level one ATX
-// heading, read from the start of a document.
+// maxTextRunes caps a heading and a link's text: both are untrusted text
+// from the file, going into an agent's context.
+const maxTextRunes = 200
+
+// capText cuts s to maxTextRunes characters, the last an ellipsis.
+func capText(s string) string {
+	if utf8.RuneCountInString(s) <= maxTextRunes {
+		return s
+	}
+	n := 0
+	for i := range s {
+		if n == maxTextRunes-1 {
+			return s[:i] + "…"
+		}
+		n++
+	}
+	return s
+}
+
+// headingOf is the front matter title, else the first ATX heading of any
+// level, one to six, read from the start of a document.
 func headingOf(head []byte, truncated bool) string {
 	text := string(head)
 	if truncated {
@@ -231,7 +255,7 @@ func headingOf(head []byte, truncated bool) string {
 				for _, fm := range lines[1:i] {
 					if v, ok := strings.CutPrefix(fm, "title:"); ok {
 						if t := unquote(strings.TrimSpace(v)); t != "" {
-							return t
+							return capText(t)
 						}
 					}
 				}
@@ -255,7 +279,11 @@ func headingOf(head []byte, truncated bool) string {
 		if len(l)-len(strings.TrimLeft(l, " ")) > 3 {
 			continue
 		}
-		if rest, ok := strings.CutPrefix(trimmed, "#"); ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
+		level := 0
+		for level < len(trimmed) && trimmed[level] == '#' {
+			level++
+		}
+		if rest := trimmed[level:]; level >= 1 && level <= 6 && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
 			rest = strings.TrimSpace(rest)
 			// A closing sequence of #s after a space is not part of it.
 			if i := strings.LastIndexAny(rest, " \t"); i >= 0 && strings.Trim(rest[i+1:], "#") == "" {
@@ -264,7 +292,7 @@ func headingOf(head []byte, truncated bool) string {
 				rest = ""
 			}
 			if rest != "" {
-				return rest
+				return capText(rest)
 			}
 		}
 	}
