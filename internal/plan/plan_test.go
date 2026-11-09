@@ -188,3 +188,51 @@ func TestLoadHashedIsTheFileBytesHash(t *testing.T) {
 		t.Fatalf("%q %v", h, err)
 	}
 }
+
+// A workbook's describing document is made from its title, so two workbooks
+// with one title, or a workbook titled as a document of the plan, would
+// meet as one name in Smrit: each is refused before anything is written.
+func TestWorkbookTitleClashesRefused(t *testing.T) {
+	res := scan.Result{Files: []scan.File{
+		file("a.csv", "workbook"), file("b.csv", "workbook"), file("c.csv", "workbook"),
+		file("d.csv", "workbook"), file("e.csv", "workbook"),
+		file("guide.md", "document"), file("notes.md", "document"),
+	}}
+	wb := func(p, title string) PlanEntry {
+		return PlanEntry{Path: p, Kind: "workbook", Space: "engineering", Title: title}
+	}
+	p := Plan{Root: "/r", Entries: []PlanEntry{
+		wb("a.csv", "Tasks"), wb("b.csv", "Tasks"),
+		{Path: "guide.md", Kind: "document", Space: "engineering", Type: "t", Title: "Runbook"},
+		wb("c.csv", "Runbook"),
+		{Path: "notes.md", Kind: "document", Space: "engineering", Type: "t"},
+		// The document's slug is notes; this title would be stored as notes.
+		wb("d.csv", "Notes!"),
+		wb("e.csv", "Releases"),
+	}}
+	ok, bad := Validate(context.Background(), p, res, spaces, true)
+	refused := map[string]string{}
+	for _, r := range bad {
+		refused[r.Path] = r.Reason
+	}
+	for _, path := range []string{"a.csv", "b.csv", "c.csv", "d.csv"} {
+		if refused[path] == "" {
+			t.Errorf("%s was not refused", path)
+		}
+	}
+	if !strings.Contains(refused["a.csv"], "Another workbook in the plan") || !strings.Contains(refused["c.csv"], "A document in the plan") {
+		t.Errorf("%v", refused)
+	}
+	var kept []string
+	for _, e := range ok {
+		kept = append(kept, e.Path)
+	}
+	if strings.Join(kept, ",") != "guide.md,notes.md,e.csv" {
+		t.Fatalf("kept %v", kept)
+	}
+	for i := 1; i < len(bad); i++ {
+		if bad[i-1].Index > bad[i].Index {
+			t.Fatalf("refusals out of plan order: %+v", bad)
+		}
+	}
+}

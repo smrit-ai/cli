@@ -327,17 +327,19 @@ func TestImportRefusedRootExits4BeforeAnyRequest(t *testing.T) {
 	}
 }
 
-func TestImportWorkbookAlreadyInSmritExits1AndSaysSo(t *testing.T) {
+// A workbook already in Smrit is listed with its sentence and counts as
+// done for the exit code (ruling, Task 13 review).
+func TestImportWorkbookAlreadyInSmritExits0AndSaysSo(t *testing.T) {
 	f, srv := newImportFake(t)
 	f.duplicate = true
 	svc := setup(t, srv, prof("acme", orgID))
 	plan := writePlan(t, `[{"path":"tasks.csv","kind":"workbook","space":"engineering","title":"Tasks","columns":[{"name":"a","type":"text"}]}]`,
 		map[string]string{"tasks.csv": "a\nx\n"})
 	code, out, errs := runCmd(t, svc, "--json=false", "import", plan)
-	if code != ExitPartial {
+	if code != ExitOK {
 		t.Fatalf("exit %d: %s %s", code, out, errs)
 	}
-	for _, want := range []string{"tasks.csv  workbook  exists: Smrit already has a document with this workbook's title in this space",
+	for _, want := range []string{"tasks.csv  workbook  exists: This space already has a document under this workbook's title",
 		"0 created, 0 updated, 0 unchanged, 1 already in Smrit, 0 failed, 0 refused, 0 skipped."} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)

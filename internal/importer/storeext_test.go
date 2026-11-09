@@ -34,6 +34,8 @@ type storeExt struct {
 	// loseRecordsAt answers the write_records call with this number (from
 	// 1) 500 after writing its rows, as if the answer were lost.
 	loseRecordsAt int
+	// loseWorkbook answers the next write_workbook 500 after making it.
+	loseWorkbook bool
 }
 
 type troveReq struct {
@@ -148,6 +150,11 @@ func (x *storeExt) call(w http.ResponseWriter, name string, a map[string]any, an
 		ops, _ := a["operations"].([]any)
 		id := fmt.Sprintf("Wb%019d", len(x.workbooks)+1)
 		x.workbooks[id] = &fakeWorkbook{ID: id, DocID: doc, Name: n, Operations: ops}
+		if x.loseWorkbook {
+			x.loseWorkbook = false
+			w.WriteHeader(http.StatusInternalServerError)
+			return true
+		}
 		answer(map[string]any{"workbook_id": id, "name": n, "created": true, "columns": []any{}})
 	case "write_records":
 		raw, _ := json.Marshal(a)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -303,5 +304,44 @@ func TestUploaderNeverFollowsOrCarriesCookies(t *testing.T) {
 	reason, err := r.put(trove.URL+"/u/x", []byte("abc"), "text/plain")
 	if err != nil || reason == "" || hits() != 0 || bytes.Contains([]byte(reason), []byte(trove.URL)) {
 		t.Fatalf("%q %v %d", reason, err, hits())
+	}
+}
+
+// uploadable takes only the compiled origin's own scheme and host, compared
+// as ASCII: no userinfo, port, fragment, look alike or near miss.
+func TestUploadableHosts(t *testing.T) {
+	r := &runner{}
+	for raw, want := range map[string]bool{
+		"https://trove.smrit.ai/u/tok":                  true,
+		"HTTPS://TROVE.SMRIT.AI/u/tok":                  true,
+		"https://Trove.Smrit.Ai/u/tok":                  true,
+		"https://me@trove.smrit.ai/u/tok":               false,
+		"https://me:pw@trove.smrit.ai/u/tok":            false,
+		"https://trove.smrit.ai:443/u/tok":              false,
+		"https://trove.smrit.ai:8443/u/tok":             false,
+		"https://trove.smrit.ai./u/tok":                 false,
+		"https://trove.smrit.ai.evil.example/u/tok":     false,
+		"https://trove.smrit.ai.evil/u/tok":             false,
+		"https://eviltrove.smrit.ai/u/tok":              false,
+		"https://trove.smrit.ai/u/tok#frag":             false,
+		"http://trove.smrit.ai/u/tok":                   false,
+		"//trove.smrit.ai/u/tok":                        false,
+		"https://trove.smrit.ai%2e/u/tok":               false,
+		"https://trove%2esmrit.ai/u/tok":                false,
+		"https://trove.ſmrit.ai/u/tok":                  false,
+		"https://trove.smrıt.ai/u/tok":                  false,
+		"https://xn--trove-smrit-ai/u/tok":              false,
+		"ftp://trove.smrit.ai/u/tok":                    false,
+		"https:trove.smrit.ai/u/tok":                    false,
+		"https://[::1]/u/tok":                           false,
+		"https://trove.smrit.ai\\@evil.example/u/tok":   false,
+		"https://evil.example\\@trove.smrit.ai/u/tok":   false,
+		"https://trove.smrit.ai/u/tok?x=https://evil.x": true,
+	} {
+		u, err := url.Parse(raw)
+		got := err == nil && r.uploadable(u)
+		if got != want {
+			t.Errorf("%q: uploadable %v, want %v", raw, got, want)
+		}
 	}
 }

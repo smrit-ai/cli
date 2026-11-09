@@ -241,8 +241,26 @@ func (r *runner) uploadable(u *url.URL) bool {
 		return false
 	}
 	secure := origin.Scheme == "https" || (server.Dev && origin.Scheme == "http" && r.o.trove == "")
-	return secure && u.Scheme == origin.Scheme && strings.EqualFold(u.Host, origin.Host) &&
-		u.User == nil && u.Opaque == "" && u.Fragment == ""
+	host, ok := asciiLower(u.Host)
+	want, wok := asciiLower(origin.Host)
+	return secure && ok && wok && u.Scheme == origin.Scheme && host == want &&
+		u.User == nil && u.Opaque == "" && u.Fragment == "" && u.RawFragment == ""
+}
+
+// asciiLower lowercases ASCII letters only and refuses any byte outside
+// ASCII, so no Unicode case folding (the long s, the dotless i) can make
+// another host equal the origin's.
+func asciiLower(s string) (string, bool) {
+	b := []byte(s)
+	for i, c := range b {
+		switch {
+		case c >= 0x80:
+			return "", false
+		case c >= 'A' && c <= 'Z':
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b), true
 }
 
 // uploader is an HTTP client that never follows a redirect and keeps no

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/smrit-ai/cli/internal/scan"
@@ -169,7 +170,96 @@ func Validate(ctx context.Context, p Plan, res scan.Result, spaces []Space, obje
 		}
 		ok = append(ok, e)
 	}
+	ok, bad = refuseTitleClashes(ok, bad)
 	return ok, bad
+}
+
+// maxBaseSlug is how much of a slug Smrit compares when it refuses a
+// document under a name its space already has.
+const maxBaseSlug = 193
+
+// refuseTitleClashes refuses each workbook whose describing document would
+// meet another document of the plan under one name in Smrit: two workbooks
+// with one title, or a workbook titled as a plan document, or whose title
+// Smrit would store under a document's slug in the same space. Smrit would
+// refuse the second as a duplicate, after the first was written.
+func refuseTitleClashes(ok []Entry, bad []Refusal) ([]Entry, []Refusal) {
+	type key struct{ space, slug string }
+	books := map[string]int{}
+	bookSlugs := map[key]int{}
+	docTitles := map[string]bool{}
+	docSlugs := map[key]bool{}
+	for _, e := range ok {
+		switch e.Kind {
+		case scan.KindWorkbook:
+			books[e.Title]++
+			bookSlugs[key{e.Space, TitleSlug(e.Title)}]++
+		case scan.KindDocument:
+			docTitles[e.Title] = true
+			docSlugs[key{e.Space, baseSlug(e.Slug)}] = true
+		}
+	}
+	var kept []Entry
+	clashed := false
+	for _, e := range ok {
+		reason := ""
+		if e.Kind == scan.KindWorkbook {
+			k := key{e.Space, TitleSlug(e.Title)}
+			switch {
+			case docTitles[e.Title] || docSlugs[k]:
+				reason = "A document in the plan has this workbook's title, or a name Smrit would store it under."
+			case books[e.Title] > 1 || bookSlugs[k] > 1:
+				reason = "Another workbook in the plan has this title, or one Smrit would store under the same name."
+			}
+		}
+		if reason == "" {
+			kept = append(kept, e)
+			continue
+		}
+		clashed = true
+		bad = append(bad, Refusal{Index: e.Index, Path: e.Path, Kind: e.Kind, Space: e.PlanEntry.Space, Reason: reason})
+	}
+	if clashed {
+		slices.SortStableFunc(bad, func(a, b Refusal) int { return a.Index - b.Index })
+	}
+	return kept, bad
+}
+
+// TitleSlug is the slug Smrit derives from a title when it is given none,
+// as Django's slugify does for ASCII: letters, digits, underscores and
+// hyphens kept and lowercased, each run of spaces and hyphens one hyphen,
+// hyphens and underscores trimmed from the ends, cut to 193. Other
+// characters are dropped, where Smrit first folds an accented letter to its
+// base letter, so a title outside ASCII may compare differently.
+func TitleSlug(title string) string {
+	var b strings.Builder
+	gap := false
+	for _, r := range strings.ToLower(title) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_':
+			if gap && b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			gap = false
+			b.WriteRune(r)
+		case r == '-', r == ' ', r == '\t', r == '\n', r == '\r', r == '\v', r == '\f':
+			gap = true
+		}
+	}
+	s := strings.Trim(b.String(), "-_")
+	s = strings.TrimRight(baseSlug(s), "-")
+	if s == "" {
+		return "document"
+	}
+	return s
+}
+
+func baseSlug(s string) string {
+	s = strings.ToLower(s)
+	if len(s) > maxBaseSlug {
+		s = s[:maxBaseSlug]
+	}
+	return s
 }
 
 func effectiveSlug(e PlanEntry) string {

@@ -141,7 +141,9 @@ func importCommand(s *Services) Command {
 				return code
 			}
 			env.Result(runOutput{rep})
-			return refusedExit(rep.Refused, rep.Failed+rep.Skipped+rep.Exists, len(rep.Entries))
+			// A workbook already in Smrit is listed with its sentence and
+			// counts as done.
+			return refusedExit(rep.Refused, rep.Failed+rep.Skipped, len(rep.Entries))
 		},
 	}
 }

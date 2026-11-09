@@ -2,6 +2,7 @@ package importer
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -260,5 +261,212 @@ func TestWorkbookResumeAfterLostAnswer(t *testing.T) {
 	if len(f.toolCalls("create_document")) != 2 || len(f.toolCalls("write_workbook")) != 1 {
 		// The describing document once, then the import map.
 		t.Fatalf("create_document %d write_workbook %d", len(f.toolCalls("create_document")), len(f.toolCalls("write_workbook")))
+	}
+}
+
+const shortID = "AbCdEfGhJkLmNpQrStUvW"
+
+var linkColumns = append(append([]plan.Column{}, taskColumns...), plan.Column{Name: "Link", Type: "relation"})
+
+// csvOf writes rows as CSV, quoting as needed.
+func csvOf(rows ...[]string) string {
+	var b strings.Builder
+	w := csv.NewWriter(&b)
+	w.WriteAll(rows)
+	return b.String()
+}
+
+var linkHeader = []string{"Task", "Hours", "Status", "Due", "Paid", "Link"}
+
+// goodRow is a row every column accepts; with sets one cell.
+func goodRow(col int, v string) []string {
+	r := []string{"a", "1", "open", "2026-11-01", "true", "<smrit:d:" + shortID + ">"}
+	if col >= 0 {
+		r[col] = v
+	}
+	return r
+}
+
+func runLinkCSV(t *testing.T, rows ...[]string) (RunReport, *storeFake, Report) {
+	t.Helper()
+	root := t.TempDir()
+	write(t, root, "tasks.csv", csvOf(append([][]string{linkHeader, goodRow(-1, "")}, rows...)...))
+	f := newStore(t)
+	e := workbookEntry("tasks.csv")
+	e.Columns = linkColumns
+	p := plan.Plan{Version: 1, Root: root, Entries: []plan.PlanEntry{e}}
+	dry, err := DryRun(context.Background(), Input{Plan: p, MCP: f.client(), Route: &Route{MCP: f.client()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mustRun(t, p, f.opts(t.TempDir())), f, dry
+}
+
+// Every cell Smrit would refuse is refused before anything is written, in
+// the dry run and the run alike, naming the row and the column and never
+// the cell.
+func TestWorkbookCellsSmritRefusesAreRefusedFirst(t *testing.T) {
+	cases := []struct {
+		name, column string
+		row          []string
+	}{
+		{"blank row", "", []string{"", "", "", "", "", ""}},
+		{"blank row of spaces", "", []string{"", " ", "", "  ", "", ""}},
+		{"date not a day", "Due", goodRow(3, "2026-02-30")},
+		{"date month only", "Due", goodRow(3, "2026-11")},
+		{"date no padding", "Due", goodRow(3, "2026-11-9")},
+		{"date week 54", "Due", goodRow(3, "2026-W54")},
+		{"date week 53 of a 52 week year", "Due", goodRow(3, "2025-W53")},
+		{"date week day 8", "Due", goodRow(3, "2026-W45-8")},
+		{"date mixed forms", "Due", goodRow(3, "2026W45-1")},
+		{"date year 0", "Due", goodRow(3, "0000-01-01")},
+		{"date ordinal", "Due", goodRow(3, "2026-313")},
+		{"date words", "Due", goodRow(3, "SECRETCELL")},
+		{"relation words", "Link", goodRow(5, "SECRETCELL")},
+		{"relation bare", "Link", goodRow(5, "smrit:d:"+shortID)},
+		{"relation kind", "Link", goodRow(5, "<smrit:x:"+shortID+">")},
+		{"relation short id", "Link", goodRow(5, "<smrit:d:SECRETCELL>")},
+		{"relation id too large", "Link", goodRow(5, "<smrit:d:zzzzzzzzzzzzzzzzzzzzz>")},
+		{"relation seq on a document", "Link", goodRow(5, "<smrit:d:"+shortID+"#3>")},
+		{"relation seq leading zero", "Link", goodRow(5, "<smrit:wb:"+shortID+"#03>")},
+		{"relation suffix", "Link", goodRow(5, "<smrit:d:"+shortID+">?x")},
+		{"relation path", "Link", goodRow(5, "/d/"+shortID)},
+		{"text zero width", "Task", goodRow(0, "SECRET​CELL")},
+		{"text control", "Task", goodRow(0, "SECRET\x01CELL")},
+		{"text lone CR", "Task", goodRow(0, "SECRET\rCELL")},
+		{"text soft hyphen", "Task", goodRow(0, "SECRET­CELL")},
+		{"text C1", "Task", goodRow(0, "SECRET\u0085CELL")},
+		{"text tag", "Task", goodRow(0, "SECRET\U000e0041CELL")},
+		{"text variation selector", "Task", goodRow(0, "SECRET︎CELL")},
+		{"number overflow", "Hours", goodRow(1, "1e999")},
+		{"number negative overflow", "Hours", goodRow(1, "-1e400")},
+		{"number NaN", "Hours", goodRow(1, "NaN")},
+		{"number Infinity", "Hours", goodRow(1, "Infinity")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rep, f, dry := runLinkCSV(t, c.row)
+			e := entryOf(t, rep, "tasks.csv")
+			if e.Status != state.StatusRefused || !strings.Contains(e.Error, "Row 2") || !strings.Contains(e.Error, c.column) {
+				t.Fatalf("%+v", e)
+			}
+			out, _ := json.Marshal(rep)
+			for _, cellText := range c.row {
+				if len(cellText) > 4 && strings.Contains(string(out), cellText) {
+					t.Fatalf("the cell %q reached the report: %s", cellText, e.Error)
+				}
+			}
+			if strings.Contains(string(out), "SECRET") {
+				t.Fatalf("a cell reached the report: %s", e.Error)
+			}
+			if dry.Entries[0].Action != ActionRefused || dry.Entries[0].Reason != e.Error {
+				t.Fatalf("dry run %+v", dry.Entries[0])
+			}
+			nothingWritten(t, f)
+		})
+	}
+}
+
+// What Smrit accepts is sent, so the check is no stricter than it has to be.
+func TestWorkbookCellsSmritAcceptsAreSent(t *testing.T) {
+	cases := map[string][]string{
+		"date compact":         goodRow(3, "20261109"),
+		"date week":            goodRow(3, "2026-W45"),
+		"date compact week":    goodRow(3, "2026W451"),
+		"date week 53":         goodRow(3, "2020-W53-7"),
+		"date padded":          goodRow(3, " 2026-11-09 "),
+		"date leap day":        goodRow(3, "2024-02-29"),
+		"date year 1":          goodRow(3, "0001-01-01"),
+		"relation workbook":    goodRow(5, "<smrit:wb:"+shortID+">"),
+		"relation row":         goodRow(5, "<smrit:wb:"+shortID+"#12>"),
+		"relation space uuid":  goodRow(5, "<smrit:s:123e4567-e89b-12d3-a456-426614174000>"),
+		"relation padded":      goodRow(5, " <smrit:d:"+shortID+"> "),
+		"text tab and newline": goodRow(0, "tab\there\r\nand a line"),
+		"text emoji":           goodRow(0, "ship it \U0001f680️"),
+		"number negative zero": goodRow(1, "-0"),
+		"number exponent":      goodRow(1, "1e5"),
+		"number long integer":  goodRow(1, "12345678901234567890"),
+		"blank but one cell":   {"", "", "", "", "", "<smrit:d:" + shortID + ">"},
+	}
+	for name, row := range cases {
+		t.Run(name, func(t *testing.T) {
+			rep, f, dry := runLinkCSV(t, row)
+			if e := entryOf(t, rep, "tasks.csv"); e.Status != state.StatusCreated {
+				t.Fatalf("%+v", e)
+			}
+			if dry.Entries[0].Action != ActionCreate {
+				t.Fatalf("dry run %+v", dry.Entries[0])
+			}
+			if n, _ := f.workbookRows(); n != 2 {
+				t.Fatalf("%d rows", n)
+			}
+		})
+	}
+}
+
+// A row is measured as Smrit stores it: keys c1, c2 and so on, an option's
+// value as its key o1, a number as Python writes it, so the limit falls
+// where Smrit's does and not where the column names would put it.
+func TestWorkbookRowLimitMeasuredAsSmritDoes(t *testing.T) {
+	long := strings.Repeat("N", 100)
+	cols := []plan.Column{
+		{Name: long, Type: "text"},
+		{Name: "S", Type: "option", Values: []string{strings.Repeat("v", 200)}},
+		{Name: "Num", Type: "number"},
+	}
+	// {"c1":"x…","c2":"o1","c3":100000.0} is n+33 bytes; 16384 is the limit.
+	for n, want := range map[int]string{16351: state.StatusCreated, 16352: state.StatusRefused} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			root := t.TempDir()
+			write(t, root, "big.csv", csvOf([]string{long, "S", "Num"}, []string{strings.Repeat("x", n), strings.Repeat("v", 200), "1e5"}))
+			f := newStore(t)
+			e := plan.PlanEntry{Path: "big.csv", Kind: "workbook", Space: "engineering", Title: "Big", Columns: cols}
+			rep := mustRun(t, plan.Plan{Version: 1, Root: root, Entries: []plan.PlanEntry{e}}, f.opts(t.TempDir()))
+			if got := entryOf(t, rep, "big.csv"); got.Status != want {
+				t.Fatalf("%+v", got)
+			}
+		})
+	}
+}
+
+func TestPythonFloatRepr(t *testing.T) {
+	for in, want := range map[string]string{
+		"1e5": "100000.0", "1.5": "1.5", "-0.0": "-0.0", "1e16": "1e+16", "1e15": "1000000000000000.0",
+		"0.0001": "0.0001", "0.00001": "1e-05", "123.456e10": "1234560000000.0", "1.5e300": "1.5e+300",
+		"2.5e-7": "2.5e-07", "12": "12", "-0": "0", "12345678901234567890": "12345678901234567890",
+	} {
+		if got := storedNumber(in); got != want {
+			t.Errorf("%s: %s, want %s", in, got, want)
+		}
+	}
+}
+
+// The answer to write_workbook was lost: the resume finds the workbook on
+// its document and writes no second one.
+func TestWorkbookResumeAfterLostWorkbookAnswer(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "tasks.csv", taskCSV(5, 0))
+	f := newStore(t)
+	f.ext.loseWorkbook = true
+	p := plan.Plan{Version: 1, Root: root, Entries: []plan.PlanEntry{workbookEntry("tasks.csv")}}
+	dir := t.TempDir()
+	rep, err := Run(context.Background(), p, f.opts(dir))
+	if !errors.Is(err, mcp.ErrUnavailable) {
+		t.Fatalf("%v", err)
+	}
+	if e := entryOf(t, rep, "tasks.csv"); e.Status != state.StatusFailed || e.ID == "" {
+		t.Fatalf("%+v", e)
+	}
+	o := f.opts(dir)
+	o.Resume = rep.Run
+	again := mustRun(t, p, o)
+	if e := entryOf(t, again, "tasks.csv"); e.Status != state.StatusCreated {
+		t.Fatalf("%+v", e)
+	}
+	if n, books := f.workbookRows(); n != 5 || len(books) != 1 || len(f.toolCalls("write_workbook")) != 1 {
+		t.Fatalf("%d rows in %d workbooks, %d write_workbook", n, len(books), len(f.toolCalls("write_workbook")))
+	}
+	if len(f.toolCalls("get_document_metadata")) == 0 {
+		t.Fatal("the resume did not look for the workbook")
 	}
 }

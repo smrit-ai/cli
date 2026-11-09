@@ -37,7 +37,7 @@ const (
 	wbHeader      = "The CSV's header does not match the plan's columns, name for name and in order."
 	wbNoColumns   = "A workbook needs its columns in the plan."
 	wbTooManyRows = "The CSV has more than 50,000 rows, the most one workbook holds."
-	wbExists      = "Smrit already has a document with this workbook's title in this space, so nothing was written for it. Run smrit import --resume with the earlier run to carry that one on."
+	wbExists      = "This space already has a document under this workbook's title, so nothing was written for it. If an earlier import made it, resume that run; otherwise give the workbook another title in the plan."
 	wbUnread      = "Smrit sent an answer about this workbook this CLI cannot read."
 	wbUnfinished  = "The workbook's rows had not all reached Smrit when the run stopped."
 	wbChanged     = "This file changed since this run imported it. Smrit keeps the rows it was sent."
@@ -94,16 +94,23 @@ func readWorkbook(e plan.Entry) ([]map[string]any, string) {
 			return nil, fmt.Sprintf("Row %d under the header has %d cells and the header has %d.", n, len(rec), len(header))
 		}
 		row := map[string]any{}
+		var keys []int
+		var vals []cellValue
 		for i, c := range e.Columns {
 			v, ok, reason := cell(rec[i], c)
 			if reason != "" {
 				return nil, fmt.Sprintf("Row %d under the header has a value in the %s column that %s.", n, columnName(c.Name), reason)
 			}
 			if ok {
-				row[c.Name] = v
+				row[c.Name] = v.wire
+				keys, vals = append(keys, i+1), append(vals, v)
 			}
 		}
-		if rowBytes(row) > maxRowBytes {
+		// Smrit refuses a row that names no column.
+		if len(row) == 0 {
+			return nil, fmt.Sprintf("Row %d under the header has no value in any column.", n)
+		}
+		if storedRowBytes(keys, vals) > maxRowBytes {
 			return nil, fmt.Sprintf("Row %d under the header is over 16 KiB, the most one workbook row holds.", n)
 		}
 		rows = append(rows, row)
@@ -133,55 +140,22 @@ func checkColumns(cols []plan.Column) string {
 			return fmt.Sprintf("The %s column is an option column and the plan gives it no values.", columnName(c.Name))
 		case c.Type != "option" && len(c.Values) > 0:
 			return fmt.Sprintf("The %s column has values and is not an option column.", columnName(c.Name))
+		case hiddenOrControl(c.Name) || strings.ContainsAny(c.Name, "\t\n\r"):
+			return "A column name in the plan carries a hidden or control character."
+		}
+		values := map[string]bool{}
+		for _, v := range c.Values {
+			if strings.TrimSpace(v) == "" || v != strings.TrimSpace(v) || hiddenOrControl(v) || strings.ContainsAny(v, "\t\n\r") {
+				return fmt.Sprintf("A value of the %s column is blank, padded, or carries a hidden or control character.", columnName(c.Name))
+			}
+			if values[v] {
+				return fmt.Sprintf("The %s column lists a value twice.", columnName(c.Name))
+			}
+			values[v] = true
 		}
 		seen[c.Name] = true
 	}
 	return ""
-}
-
-// cell is one CSV cell as its column's type: ok false leaves it out, which
-// Smrit stores as no value. reason, when set, ends a sentence saying why
-// the cell does not fit; it never repeats the cell.
-func cell(s string, c plan.Column) (v any, ok bool, reason string) {
-	t := strings.TrimSpace(s)
-	if c.Type == "text" {
-		return s, s != "", ""
-	}
-	if t == "" {
-		return nil, false, ""
-	}
-	switch c.Type {
-	case "number":
-		if (t[0] != '-' && (t[0] < '0' || t[0] > '9')) || !json.Valid([]byte(t)) {
-			return nil, false, "is not a number"
-		}
-		return json.Number(t), true, ""
-	case "bool":
-		switch strings.ToLower(t) {
-		case "true":
-			return true, true, ""
-		case "false":
-			return false, true, ""
-		}
-		return nil, false, "is not true or false"
-	case "option":
-		for _, x := range c.Values {
-			if x == t {
-				return t, true, ""
-			}
-		}
-		return nil, false, "is not one of the column's values"
-	}
-	return t, true, ""
-}
-
-// rowBytes is a row's size as Smrit counts it: compact JSON, unescaped.
-func rowBytes(row map[string]any) int {
-	var b bytes.Buffer
-	enc := json.NewEncoder(&b)
-	enc.SetEscapeHTML(false)
-	enc.Encode(row)
-	return b.Len() - 1
 }
 
 func csvError(err error) string {
