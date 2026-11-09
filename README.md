@@ -23,6 +23,7 @@ This needs Go 1.25 or newer. A one line installer and prebuilt binaries are comi
 | `smrit scan <path>...` | List the files in folders with their git state, links and flags, never their contents. |
 | `smrit import <plan>` | Import a plan into Smrit. `--dry-run` previews it and writes nothing. `--resume <run>` carries on a run, skipping what it already imported. |
 | `smrit retire <run>` | Remove the files a finished import moved into Smrit, zipping any that git cannot restore. Without `--apply` it only reports. |
+| `smrit setup <harness>` | Connect Claude Code, Codex or Antigravity to your organization: its Smrit server pinned to the organization you signed in to, the rule that allows Smrit's tools, and the always on block in its instruction files. It shows the exact diff and writes nothing until `--apply`, keeps every other entry, and backs each file up first. `--block everywhere`, `project` or `both` says where the block goes. Another harness from Smrit's connect page gets its steps printed. |
 | `smrit upgrade` | Replace this smrit with the latest release, verified against its checksum. `--check` only reports the latest version. |
 | `smrit help --json` | The whole command tree as JSON. |
 
@@ -43,6 +44,7 @@ This needs Go 1.25 or newer. A one line installer and prebuilt binaries are comi
 - Write to a public space.
 - Delete a README, a licence, an agent instruction file, or a file a build or a docs site uses.
 - Delete anything that is not safely in Smrit, in the zip, or in git.
+- Change a harness's settings or instruction files without `--apply`, write through a symbolic link, overwrite a settings file it cannot parse, or touch a server entry named smrit that points anywhere but Smrit.
 - Talk to any server but Smrit's own, and GitHub for `smrit upgrade` alone. Every address is built in; the hosts are listed under Security.
 
 ## Sign in and credentials

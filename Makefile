@@ -4,7 +4,7 @@ WEB ?= http://localhost:3000
 MODULE := github.com/smrit-ai/cli
 TARGETS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 
-.PHONY: test test-install build dev release secret-cases
+.PHONY: test test-install build dev release secret-cases sync-catalog
 
 test:
 	go test ./...
@@ -17,6 +17,11 @@ test-install:
 # when the plugin's repository is checked out beside this one.
 secret-cases:
 	python3 -I scripts/secret_cases.py
+
+# Copies the server's harness catalogue into the binary's embedded copy, when
+# the API is checked out beside this repository.
+sync-catalog:
+	@if [ -f ../api/smrit/agent_setup/harnesses.json ]; then cp ../api/smrit/agent_setup/harnesses.json internal/setup/harnesses.json && echo "synced internal/setup/harnesses.json"; else echo "../api/smrit/agent_setup/harnesses.json is not here; the embedded copy is unchanged."; fi
 
 build:
 	go build -o bin/smrit ./cmd/smrit

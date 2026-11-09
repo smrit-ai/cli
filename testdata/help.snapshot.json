@@ -117,6 +117,40 @@
       "flags": []
     },
     {
+      "name": "setup",
+      "summary": "Connect a harness to Smrit: smrit setup <harness>. Shows the exact changes; --apply makes them.",
+      "flags": [
+        {
+          "name": "org",
+          "usage": "The organization to use, when signed in to several.",
+          "default": "",
+          "bool": false,
+          "repeatable": false
+        },
+        {
+          "name": "apply",
+          "usage": "Make the changes. Without it setup only shows them.",
+          "default": "",
+          "bool": true,
+          "repeatable": false
+        },
+        {
+          "name": "block",
+          "usage": "Where the always on block goes: everywhere, project or both.",
+          "default": "everywhere",
+          "bool": false,
+          "repeatable": false
+        },
+        {
+          "name": "project",
+          "usage": "The project folder for the project file. The default is the top of the current git repository.",
+          "default": "",
+          "bool": false,
+          "repeatable": false
+        }
+      ]
+    },
+    {
       "name": "status",
       "summary": "Show who you are signed in as and what you can see.",
       "flags": [

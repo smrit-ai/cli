@@ -1,0 +1,636 @@
+[
+  {
+    "id": "chatgpt",
+    "name": "ChatGPT",
+    "description": "Desktop and web",
+    "logo": "openai",
+    "routes": [
+      {
+        "id": "desktop",
+        "label": "Desktop",
+        "scope": "ChatGPT desktop on this device",
+        "connect": [
+          {
+            "title": "Add Smrit",
+            "text": "Open Settings, then MCP servers, then Add server. Choose Streamable HTTP. Name it {{server_name}} and paste this URL.",
+            "value": "{{mcp_url}}",
+            "copy_label": "Copy URL"
+          },
+          {
+            "title": "Save and authenticate",
+            "text": "Save, select Restart, then Authenticate beside Smrit. Type /mcp in the composer to check the server is available.",
+            "value": null,
+            "copy_label": null
+          },
+          {
+            "title": "Approve your account",
+            "text": "Sign in to Smrit and check {{org_name}} before approving. To save memories, allow read and write access. Read-only access can recall existing context but cannot save new outcomes.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "instructions": [
+          {
+            "title": "Add a small memory instruction",
+            "text": "Open Settings and your personal instructions. Append this to the existing text. If you manage instructions as files, use the active global AGENTS.override.md or AGENTS.md in your Codex home.",
+            "value": "{{instructions}}",
+            "copy_label": "Copy instructions"
+          },
+          {
+            "title": "Keep your existing instructions",
+            "text": "Add this as a small separate section. Preserve your other rules and any explicit account binding for a project. Start a new conversation after saving.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "sources": [
+          {
+            "label": "MCP setup",
+            "url": "https://learn.chatgpt.com/docs/extend/mcp"
+          },
+          {
+            "label": "Personal instructions",
+            "url": "https://learn.chatgpt.com/docs/personalize"
+          }
+        ],
+        "reviewed_on": "2026-11-02"
+      },
+      {
+        "id": "web",
+        "label": "Web",
+        "scope": "Your ChatGPT custom instructions",
+        "connect": [
+          {
+            "title": "Add a custom MCP server",
+            "text": "Open ChatGPT Plugins. Select the plus button, then Add custom MCP server. Use Smrit as the name and Shared memory for agents as the description.",
+            "value": "{{mcp_url}}",
+            "copy_label": "Copy URL"
+          },
+          {
+            "title": "Create and install the plugin",
+            "text": "Enter this URL as the public endpoint, choose OAuth, review the access notice and create the plugin. Install it and confirm its tools are available. Workspace policy may require an administrator.",
+            "value": null,
+            "copy_label": null
+          },
+          {
+            "title": "Approve your account",
+            "text": "Sign in to Smrit and check {{org_name}} before approving. To save memories, allow read and write access. Read-only access can recall existing context but cannot save new outcomes.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "instructions": [
+          {
+            "title": "Add a small memory instruction",
+            "text": "Open Settings, Personalization, then Custom instructions. Append the text below. Make sure the Smrit plugin is available in the new conversation; local desktop MCP settings do not carry over to the web.",
+            "value": "{{instructions}}",
+            "copy_label": "Copy instructions"
+          },
+          {
+            "title": "Keep your existing instructions",
+            "text": "Add this as a small separate section. Preserve your other rules and any explicit account binding for a project. Start a new conversation after saving.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "sources": [
+          {
+            "label": "Custom MCP setup",
+            "url": "https://developers.openai.com/plugins/deploy/connect-chatgpt"
+          },
+          {
+            "label": "Personal instructions",
+            "url": "https://learn.chatgpt.com/docs/personalize"
+          }
+        ],
+        "reviewed_on": "2026-11-02"
+      }
+    ]
+  },
+  {
+    "id": "codex",
+    "name": "Codex",
+    "description": "CLI and IDE",
+    "logo": "codex",
+    "routes": [
+      {
+        "id": "local",
+        "label": "CLI and IDE",
+        "scope": "Your active Codex home",
+        "connect": [
+          {
+            "title": "Add the connection",
+            "text": "Run these commands on the machine where Codex runs. The desktop app and IDE share this host configuration.",
+            "value": "codex mcp add {{server_name}} --url {{mcp_url}}\ncodex mcp login {{server_name}} --scopes read,write",
+            "copy_label": "Copy commands"
+          },
+          {
+            "title": "Approve your account",
+            "text": "Sign in to Smrit and check {{org_name}} before approving. To save memories, allow read and write access. Read-only access can recall existing context but cannot save new outcomes.",
+            "value": null,
+            "copy_label": null
+          },
+          {
+            "title": "Check the tools",
+            "text": "Start a new session. Use /mcp in the CLI or the MCP servers list in the IDE to check authentication. Keep existing servers; do not replace your config file.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "instructions": [
+          {
+            "title": "Use the global instruction file",
+            "text": "Append this to AGENTS.md in CODEX_HOME, normally ~/.codex. If a nonempty AGENTS.override.md exists there, append to that active file instead. Project instructions can override it.",
+            "value": "{{instructions}}",
+            "copy_label": "Copy instructions"
+          },
+          {
+            "title": "Keep your existing instructions",
+            "text": "Add this as a small separate section. Preserve your other rules and any explicit account binding for a project. Start a new conversation after saving.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "sources": [
+          {
+            "label": "MCP configuration",
+            "url": "https://learn.chatgpt.com/docs/extend/mcp"
+          },
+          {
+            "label": "Instruction discovery",
+            "url": "https://learn.chatgpt.com/docs/agent-configuration/agents-md"
+          }
+        ],
+        "reviewed_on": "2026-11-02"
+      }
+    ]
+  },
+  {
+    "id": "claude",
+    "name": "Claude",
+    "description": "Web and desktop",
+    "logo": "claude",
+    "routes": [
+      {
+        "id": "app",
+        "label": "Web and desktop",
+        "scope": "Your Claude instructions",
+        "connect": [
+          {
+            "title": "Add a custom connector",
+            "text": "Open Customize, Connectors, then Add and Add custom connector. Name it Smrit and paste this URL.",
+            "value": "{{mcp_url}}",
+            "copy_label": "Copy URL"
+          },
+          {
+            "title": "Choose automatic registration",
+            "text": "When asked how to register the OAuth client, choose Register automatically. Continue, review the connection and choose Sign in now. On a managed workspace, an owner may need to add it first.",
+            "value": null,
+            "copy_label": null
+          },
+          {
+            "title": "Approve your account",
+            "text": "Sign in to Smrit and check {{org_name}} before approving. To save memories, allow read and write access. Read-only access can recall existing context but cannot save new outcomes.",
+            "value": null,
+            "copy_label": null
+          },
+          {
+            "title": "Make it available",
+            "text": "In a new conversation, use the plus menu and Connectors to enable Smrit.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "instructions": [
+          {
+            "title": "Use your Claude instructions",
+            "text": "Open Settings, Your Claude, then Instructions. Append the text below. These are your personal instructions, separate from a project’s instructions.",
+            "value": "{{instructions}}",
+            "copy_label": "Copy instructions"
+          },
+          {
+            "title": "Keep your existing instructions",
+            "text": "Add this as a small separate section. Preserve your other rules and any explicit account binding for a project. Start a new conversation after saving.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "sources": [
+          {
+            "label": "Custom connectors",
+            "url": "https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp"
+          },
+          {
+            "label": "Personalization",
+            "url": "https://support.claude.com/en/articles/10185728-understanding-claude-s-personalization-features"
+          }
+        ],
+        "reviewed_on": "2026-11-02"
+      }
+    ]
+  },
+  {
+    "id": "claude-code",
+    "name": "Claude Code",
+    "description": "Terminal and IDE",
+    "logo": "claude-code",
+    "routes": [
+      {
+        "id": "local",
+        "label": "Terminal and IDE",
+        "scope": "Your global CLAUDE.md",
+        "connect": [
+          {
+            "title": "Add Smrit for your user",
+            "text": "If Smrit is already available through your Claude connectors, reuse it. Otherwise run this on the machine where Claude Code runs.",
+            "value": "claude mcp add --transport http --scope user {{server_name}} {{mcp_url}}",
+            "copy_label": "Copy command"
+          },
+          {
+            "title": "Authenticate",
+            "text": "In Claude Code, open /mcp, select Smrit and follow the sign-in flow.",
+            "value": null,
+            "copy_label": null
+          },
+          {
+            "title": "Approve your account",
+            "text": "Sign in to Smrit and check {{org_name}} before approving. To save memories, allow read and write access. Read-only access can recall existing context but cannot save new outcomes.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "instructions": [
+          {
+            "title": "Use your global instruction file",
+            "text": "Append this to ~/.claude/CLAUDE.md, or update only the Smrit section if it already exists. That file applies in every project.",
+            "value": "{{instructions}}",
+            "copy_label": "Copy instructions"
+          },
+          {
+            "title": "Keep your existing instructions",
+            "text": "Add this as a small separate section. Preserve the rest of the file and any explicit account binding for a project. Start a new conversation after saving.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "sources": [
+          {
+            "label": "Remote MCP",
+            "url": "https://code.claude.com/docs/en/mcp"
+          },
+          {
+            "label": "User memory",
+            "url": "https://code.claude.com/docs/en/memory"
+          }
+        ],
+        "reviewed_on": "2026-11-02"
+      }
+    ]
+  },
+  {
+    "id": "grok",
+    "name": "Grok",
+    "description": "Web",
+    "logo": "grok",
+    "routes": [
+      {
+        "id": "web",
+        "label": "Web",
+        "scope": "Your Grok custom instructions",
+        "connect": [
+          {
+            "title": "Add a connector",
+            "text": "Open grok.com/connectors, select New Connector and choose a custom MCP connection. Paste this URL.",
+            "value": "{{mcp_url}}",
+            "copy_label": "Copy URL"
+          },
+          {
+            "title": "Approve your account",
+            "text": "Sign in to Smrit and check {{org_name}} before approving. To save memories, allow read and write access. Read-only access can recall existing context but cannot save new outcomes.",
+            "value": null,
+            "copy_label": null
+          },
+          {
+            "title": "Enable the tools",
+            "text": "Check that Smrit is enabled for the conversation. Workspace controls and available settings can differ by account.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "instructions": [
+          {
+            "title": "Add to custom instructions",
+            "text": "In Grok settings, open your custom instructions and append this text. Save it, then use a new conversation to check that it applies.",
+            "value": "{{instructions}}",
+            "copy_label": "Copy instructions"
+          },
+          {
+            "title": "Keep your existing instructions",
+            "text": "Add this as a small separate section. Preserve your other rules and any explicit account binding for a project. Start a new conversation after saving.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "sources": [
+          {
+            "label": "Connectors",
+            "url": "https://docs.x.ai/grok/connectors"
+          },
+          {
+            "label": "Custom instructions release",
+            "url": "https://grok.com/release-notes/sep-26-2026"
+          }
+        ],
+        "reviewed_on": "2026-11-02"
+      }
+    ]
+  },
+  {
+    "id": "grok-build",
+    "name": "Grok Build",
+    "description": "Coding agent",
+    "logo": "grok",
+    "routes": [
+      {
+        "id": "local",
+        "label": "Coding agent",
+        "scope": "Your global Grok rules",
+        "connect": [
+          {
+            "title": "Add the MCP server",
+            "text": "Run this where Grok Build runs. Follow the browser authentication flow when it opens.",
+            "value": "grok mcp add --transport http {{server_name}} {{mcp_url}}",
+            "copy_label": "Copy command"
+          },
+          {
+            "title": "Approve your account",
+            "text": "Sign in to Smrit and check {{org_name}} before approving. To save memories, allow read and write access. Read-only access can recall existing context but cannot save new outcomes.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "instructions": [
+          {
+            "title": "Use your global rules",
+            "text": "Append this to ~/.grok/AGENTS.md. Keep any existing rules. Start a new session; grok inspect can show which rules were loaded.",
+            "value": "{{instructions}}",
+            "copy_label": "Copy instructions"
+          },
+          {
+            "title": "Keep your existing instructions",
+            "text": "Add this as a small separate section. Preserve your other rules and any explicit account binding for a project. Start a new conversation after saving.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "sources": [
+          {
+            "label": "MCP servers",
+            "url": "https://docs.x.ai/build/features/mcp-servers"
+          },
+          {
+            "label": "Project and global rules",
+            "url": "https://docs.x.ai/build/features/project-rules"
+          }
+        ],
+        "reviewed_on": "2026-11-02"
+      }
+    ]
+  },
+  {
+    "id": "openclaw",
+    "name": "OpenClaw",
+    "description": "Your running agent",
+    "logo": "openclaw",
+    "routes": [
+      {
+        "id": "gateway",
+        "label": "Gateway",
+        "scope": "The selected agent workspace",
+        "connect": [
+          {
+            "title": "Connect on the actual gateway",
+            "text": "In the Control UI, open Settings, MCP. Add a Streamable HTTP server named {{server_name}} using this URL.",
+            "value": "{{mcp_url}}",
+            "copy_label": "Copy URL"
+          },
+          {
+            "title": "Enable and sign in",
+            "text": "Enable Smrit for the agent you use and complete OAuth in the Control UI. Adding a global server does not enable it in every session.",
+            "value": null,
+            "copy_label": null
+          },
+          {
+            "title": "Approve your account",
+            "text": "Sign in to Smrit and check {{org_name}} before approving. To save memories, allow read and write access. Read-only access can recall existing context but cannot save new outcomes.",
+            "value": null,
+            "copy_label": null
+          },
+          {
+            "title": "If you use the CLI",
+            "text": "Add the server on the gateway host. CLI OAuth login is an offline path: stop the gateway before openclaw mcp login, then restart it. Prefer the Control UI when the gateway is running.",
+            "value": "openclaw mcp add {{server_name}} --url {{mcp_url}} --transport streamable-http",
+            "copy_label": "Copy command"
+          }
+        ],
+        "instructions": [
+          {
+            "title": "Use the agent’s workspace instructions",
+            "text": "Append this to AGENTS.md in the selected agent’s workspace. Each agent has its own workspace. Keep its persona in SOUL.md and preserve all existing instructions.",
+            "value": "{{instructions}}",
+            "copy_label": "Copy instructions"
+          },
+          {
+            "title": "Keep your existing instructions",
+            "text": "Add this as a small separate section. Preserve your other rules and any explicit account binding for a project. Start a new conversation after saving.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "sources": [
+          {
+            "label": "Native MCP",
+            "url": "https://docs.openclaw.ai/tools/mcp"
+          },
+          {
+            "label": "Agent workspace",
+            "url": "https://docs.openclaw.ai/concepts/agent"
+          }
+        ],
+        "reviewed_on": "2026-11-02"
+      }
+    ]
+  },
+  {
+    "id": "hermes",
+    "name": "Hermes",
+    "description": "CLI and gateway",
+    "logo": "hermes",
+    "routes": [
+      {
+        "id": "profile",
+        "label": "CLI and gateway",
+        "scope": "The active Hermes profile",
+        "connect": [
+          {
+            "title": "Merge into your MCP configuration",
+            "text": "In the active profile’s config.yaml, normally ~/.hermes/config.yaml, merge this server under mcp_servers. Preserve existing servers.",
+            "value": "mcp_servers:\n  {{server_name}}:\n    url: {{mcp_url}}\n    auth: oauth",
+            "copy_label": "Copy configuration"
+          },
+          {
+            "title": "Authenticate on the Hermes host",
+            "text": "Run this from a fresh terminal, then restart Hermes or use /reload-mcp. A remote gateway needs authentication on that host.",
+            "value": "hermes mcp login {{server_name}}",
+            "copy_label": "Copy command"
+          },
+          {
+            "title": "Approve your account",
+            "text": "Sign in to Smrit and check {{org_name}} before approving. To save memories, allow read and write access. Read-only access can recall existing context but cannot save new outcomes.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "instructions": [
+          {
+            "title": "Create a small native skill",
+            "text": "Save this as skills/smrit-memory/SKILL.md inside the active Hermes profile, normally ~/.hermes. Preserve any existing Smrit skill or update its bootstrap section.",
+            "value": "---\nname: smrit-memory\ndescription: Recall shared context and capture authorized outcomes through Smrit.\n---\n\n{{instructions}}",
+            "copy_label": "Copy skill"
+          },
+          {
+            "title": "Load it in every session",
+            "text": "Add smrit-memory to skills.auto_load in the same profile’s config.yaml. Merge with the existing list. Keep the skill enabled on the platforms you use. Start a new session.",
+            "value": "skills:\n  auto_load:\n    - smrit-memory",
+            "copy_label": "Copy configuration"
+          }
+        ],
+        "sources": [
+          {
+            "label": "MCP and OAuth",
+            "url": "https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp"
+          },
+          {
+            "label": "Automatic skill loading",
+            "url": "https://hermes-agent.nousresearch.com/docs/user-guide/cli"
+          },
+          {
+            "label": "Skill files",
+            "url": "https://hermes-agent.nousresearch.com/docs/guides/work-with-skills"
+          }
+        ],
+        "reviewed_on": "2026-11-02"
+      }
+    ]
+  },
+  {
+    "id": "grok-bot",
+    "name": "Grok Bot",
+    "description": "Personal bot",
+    "logo": "grok-bot",
+    "routes": [
+      {
+        "id": "bot",
+        "label": "Personal bot",
+        "scope": "This bot’s lasting instructions",
+        "connect": [
+          {
+            "title": "Ask your bot to add Smrit",
+            "text": "Send this to the bot you want to use.",
+            "value": "Add a custom MCP app named {{server_name}} at {{mcp_url}}. Show me the connection card so I can authorize it.",
+            "copy_label": "Copy request"
+          },
+          {
+            "title": "Authorize the connection",
+            "text": "Use Authorize or Authenticate on the connection card. Adding the app alone does not grant access. Its tools should be available on the next message.",
+            "value": null,
+            "copy_label": null
+          },
+          {
+            "title": "Approve your account",
+            "text": "Sign in to Smrit and check {{org_name}} before approving. To save memories, allow read and write access. Read-only access can recall existing context but cannot save new outcomes.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "instructions": [
+          {
+            "title": "Give your bot a lasting instruction",
+            "text": "Send this in chat and check that the bot confirms it saved the instruction. This applies to this bot, not every bot. Shared bots may need their owner to configure instructions.",
+            "value": "Save this as a lasting instruction for this bot, preserving my other instructions:\n\n{{instructions}}",
+            "copy_label": "Copy instruction"
+          }
+        ],
+        "sources": [
+          {
+            "label": "Apps and custom MCP",
+            "url": "https://docs.x.ai/grok-bot/computer-and-apps"
+          },
+          {
+            "label": "Lasting bot instructions",
+            "url": "https://docs.x.ai/grok-bot/bots"
+          }
+        ],
+        "reviewed_on": "2026-11-02"
+      }
+    ]
+  },
+  {
+    "id": "opencode",
+    "name": "OpenCode",
+    "description": "Terminal and desktop",
+    "logo": "opencode",
+    "routes": [
+      {
+        "id": "v2",
+        "label": "OpenCode V2",
+        "scope": "Your OpenCode user instructions",
+        "connect": [
+          {
+            "title": "Add Smrit for every project",
+            "text": "Run this on the machine where OpenCode V2 runs. It merges the server into your global configuration.",
+            "value": "opencode mcp add {{server_name}} --global --url {{mcp_url}}",
+            "copy_label": "Copy command"
+          },
+          {
+            "title": "Authenticate",
+            "text": "Run this command or open /mcps, select Smrit and sign in. If you configure it by hand, V2 uses mcp.servers, not the V1 mcp structure.",
+            "value": "opencode mcp auth {{server_name}}",
+            "copy_label": "Copy command"
+          },
+          {
+            "title": "Approve your account",
+            "text": "Sign in to Smrit and check {{org_name}} before approving. To save memories, allow read and write access. Read-only access can recall existing context but cannot save new outcomes.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "instructions": [
+          {
+            "title": "Use your user instruction file",
+            "text": "Append this to ~/.config/opencode/AGENTS.md. Preserve existing instructions and resolve any conflicting project rules. Check with a fresh session in your usual project.",
+            "value": "{{instructions}}",
+            "copy_label": "Copy instructions"
+          },
+          {
+            "title": "Keep your existing instructions",
+            "text": "Add this as a small separate section. Preserve your other rules and any explicit account binding for a project. Start a new conversation after saving.",
+            "value": null,
+            "copy_label": null
+          }
+        ],
+        "sources": [
+          {
+            "label": "MCP configuration",
+            "url": "https://opencode.ai/v2/docs/mcp-servers/"
+          },
+          {
+            "label": "Persistent instructions",
+            "url": "https://opencode.ai/v2/docs/instructions/"
+          }
+        ],
+        "reviewed_on": "2026-11-02"
+      }
+    ]
+  }
+]
