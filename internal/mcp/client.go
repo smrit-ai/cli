@@ -1,5 +1,6 @@
 // Package mcp calls tools on the Smrit MCP server over its stateless JSON
-// transport: one POST per call, no session, no initialize, no tools/list.
+// transport: one POST per call, no session and no initialize. It also lists
+// the tools the server offers and sends requests to the CLI door.
 package mcp
 
 import (

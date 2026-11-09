@@ -45,7 +45,9 @@ type received struct {
 	Space string
 	Paths []string
 	Files map[string]string
-	Plan  struct {
+	// Dispositions are the Content-Disposition headers of the file parts.
+	Dispositions []string
+	Plan         struct {
 		Files []map[string]string `json:"files"`
 	}
 }
@@ -98,6 +100,7 @@ func newFake(t *testing.T) *fakeSmrit {
 			b, _ := io.ReadAll(p)
 			switch p.FormName() {
 			case "files":
+				rec.Dispositions = append(rec.Dispositions, p.Header.Get("Content-Disposition"))
 				datas = append(datas, string(b))
 			case "paths":
 				rec.Paths = append(rec.Paths, string(b))
@@ -345,14 +348,71 @@ func TestUpgradeRequiredIsErrUpgrade(t *testing.T) {
 }
 
 func TestRouteUsesCompiledOriginAndPathEscape(t *testing.T) {
-	f := newFake(t)
-	r := &Route{MCP: f.client()}
-	if _, err := r.Preview(context.Background(), "a b/../c", []Upload{{Path: "x.md", Data: []byte("x"), Type: "t", Title: "T", Slug: "x"}}); err != nil {
+	var uri string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uri = r.RequestURI
+		io.WriteString(w, `{"items":[]}`)
+	}))
+	defer srv.Close()
+	c := &mcp.Client{Origin: srv.URL, Version: "1", Token: func(context.Context) (string, error) { return token, nil }}
+	if _, err := (&Route{MCP: c}).Preview(context.Background(), "a b/../c", []Upload{{Path: "x.md", Data: []byte("x")}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.paths[len(f.paths)-1]; got != "POST /cli/v1/spaces/a b/../c/import/preview" {
-		// The server sees the decoded path; the escaped form must have kept the slashes inside one segment.
-		t.Fatalf("%q", got)
+	if uri != "/cli/v1/spaces/a%20b%2F..%2Fc/import/preview" {
+		t.Fatalf("the space was not escaped into one segment: %q", uri)
+	}
+}
+
+func TestBatchPairsEachFileWithItsPath(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "# A\nalpha\n")
+	write(t, root, "sub/b.md", "# B\nbravo\n")
+	write(t, root, "c.md", "# C\ncharlie\n")
+	f := newFake(t)
+	p := plan.Plan{Root: root, Entries: []plan.PlanEntry{docEntry("a.md"), docEntry("sub/b.md"), docEntry("c.md")}}
+	if _, err := DryRun(context.Background(), f.input(p)); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.previews) != 1 {
+		t.Fatalf("batches: %d", len(f.previews))
+	}
+	r := f.previews[0]
+	if strings.Join(r.Paths, ",") != "a.md,sub/b.md,c.md" {
+		t.Fatalf("paths %v", r.Paths)
+	}
+	want := map[string]string{"a.md": "# A\nalpha\n", "sub/b.md": "# B\nbravo\n", "c.md": "# C\ncharlie\n"}
+	for path, body := range want {
+		if r.Files[path] != body {
+			t.Errorf("%s carried %q", path, r.Files[path])
+		}
+	}
+	for i, pf := range r.Plan.Files {
+		if pf["relative_path"] != r.Paths[i] {
+			t.Errorf("plan entry %d is %s, path is %s", i, pf["relative_path"], r.Paths[i])
+		}
+	}
+}
+
+func TestMultipartFilenameIsTheBaseName(t *testing.T) {
+	f := newFake(t)
+	r := &Route{MCP: f.client()}
+	if _, err := r.Preview(context.Background(), "s", []Upload{{Path: "/abs/deep/dir/a.md", Data: []byte("x")}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.previews[0].Dispositions[0]; !strings.Contains(got, `filename="a.md"`) {
+		t.Fatalf("%s", got)
+	}
+}
+
+func TestRefusedRootMakesNoRequest(t *testing.T) {
+	f := newFake(t)
+	_, err := DryRun(context.Background(), f.input(plan.Plan{Root: "/", Entries: []plan.PlanEntry{docEntry("a.md")}}))
+	var re *scan.RefusedError
+	if !errors.As(err, &re) || !strings.Contains(re.Msg, "smrit import will not") || strings.Contains(re.Msg, "smrit scan") {
+		t.Fatalf("%v", err)
+	}
+	if len(f.paths) != 0 {
+		t.Fatalf("requests were made: %v", f.paths)
 	}
 }
 

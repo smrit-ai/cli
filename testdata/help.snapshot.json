@@ -129,7 +129,7 @@
     },
     {
       "code": 4,
-      "meaning": "The request was refused: by the server, for example because of permissions or limits, or by smrit, for example a folder scan will not read."
+      "meaning": "The request was refused: by the server, for example because of permissions or limits, or by smrit, for example a folder scan will not read, or an import plan in which every entry is refused."
     },
     {
       "code": 5,

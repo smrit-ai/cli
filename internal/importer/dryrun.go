@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strings"
 	"syscall"
 
 	"github.com/smrit-ai/cli/internal/plan"
@@ -80,6 +81,10 @@ type Input struct {
 // workbooks and objects are checked here and reported as create.
 func DryRun(ctx context.Context, in Input) (Report, error) {
 	var rep Report
+	// A root the scan will not read is refused before any request is made.
+	if err := scan.CheckRoots([]string{in.Plan.Root}, scan.Options{}); err != nil {
+		return rep, forImport(err)
+	}
 	raw, err := in.MCP.Call(ctx, "spaces", nil)
 	if err != nil {
 		return rep, err
@@ -107,7 +112,7 @@ func DryRun(ctx context.Context, in Input) (Report, error) {
 		var re *scan.RefusedError
 		var ue *scan.UsageError
 		if errors.As(err, &re) || errors.As(err, &ue) {
-			return rep, err
+			return rep, forImport(err)
 		}
 		if ctx.Err() != nil {
 			return rep, err
@@ -269,4 +274,24 @@ func readExact(e plan.Entry) ([]byte, error) {
 		return nil, changed
 	}
 	return data, nil
+}
+
+// forImport words a scan refusal for smrit import, which shares the scan's
+// rules but is not smrit scan.
+func forImport(err error) error {
+	var re *scan.RefusedError
+	var ue *scan.UsageError
+	switch {
+	case errors.As(err, &re):
+		return &scan.RefusedError{Msg: importWords(re.Msg)}
+	case errors.As(err, &ue):
+		return &scan.UsageError{Msg: importWords(ue.Msg)}
+	}
+	return err
+}
+
+func importWords(s string) string {
+	s = strings.ReplaceAll(s, "smrit scan will not scan", "smrit import will not read")
+	s = strings.ReplaceAll(s, "smrit scan does not follow", "smrit import does not follow")
+	return strings.ReplaceAll(s, "smrit scan", "smrit import")
 }

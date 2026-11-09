@@ -96,9 +96,9 @@ func TestImportDryRunJSONExit0(t *testing.T) {
 	}
 	var rep struct {
 		Organization struct{ Name string } `json:"organization"`
-		Entries      []map[string]any       `json:"entries"`
-		WouldCreate  int                    `json:"would_create"`
-		Refused      int                    `json:"refused"`
+		Entries      []map[string]any      `json:"entries"`
+		WouldCreate  int                   `json:"would_create"`
+		Refused      int                   `json:"refused"`
 	}
 	if err := json.Unmarshal([]byte(out), &rep); err != nil || rep.Organization.Name != "Acme" || rep.WouldCreate != 1 || rep.Refused != 0 {
 		t.Fatalf("%v %s", err, out)
@@ -127,7 +127,7 @@ func TestImportRouteRefusalExits1WithItsSentence(t *testing.T) {
 	svc := setup(t, srv, prof("acme", orgID))
 	plan := writePlan(t, `[{"path":"a.md","kind":"document","space":"engineering","type":"decision"}]`, map[string]string{"a.md": "# A\n"})
 	code, out, _ := runCmd(t, svc, "import", plan, "--dry-run")
-	if code != ExitPartial || !strings.Contains(out, `"refused":1`) {
+	if code != ExitRefused || !strings.Contains(out, `"refused":1`) {
 		t.Fatalf("exit %d: %s", code, out)
 	}
 }
@@ -150,5 +150,27 @@ func TestImportUsageErrors(t *testing.T) {
 	}
 	if code, _, _ := runCmd(t, svc, "import", filepath.Join(t.TempDir(), "none.json"), "--dry-run"); code != ExitUsage {
 		t.Fatalf("missing plan: %d", code)
+	}
+}
+
+func TestImportEveryEntryRefusedExits4(t *testing.T) {
+	_, srv := newImportFake(t)
+	svc := setup(t, srv, prof("acme", orgID))
+	plan := writePlan(t, `[{"path":"a.md","kind":"document","space":"nowhere","type":"decision"}]`, map[string]string{"a.md": "# A\n"})
+	code, out, _ := runCmd(t, svc, "import", plan, "--dry-run")
+	if code != ExitRefused || !strings.Contains(out, `"refused":1`) {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+}
+
+func TestImportRefusedRootExits4BeforeAnyRequest(t *testing.T) {
+	f, srv := newImportFake(t)
+	svc := setup(t, srv, prof("acme", orgID))
+	dir := t.TempDir()
+	plan := filepath.Join(dir, "plan.json")
+	os.WriteFile(plan, []byte(`{"version":1,"root":"/","entries":[{"path":"a.md","kind":"document","space":"engineering","type":"decision"}]}`), 0o644)
+	code, _, errs := runCmd(t, svc, "import", plan, "--dry-run")
+	if code != ExitRefused || !strings.Contains(errs, "smrit import will not") || len(f.paths) != 0 {
+		t.Fatalf("exit %d %q %v", code, errs, f.paths)
 	}
 }

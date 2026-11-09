@@ -145,6 +145,13 @@ func (e *UsageError) Error() string { return e.Msg }
 func refused(format string, a ...any) error { return &RefusedError{fmt.Sprintf(format, a...)} }
 func usage(format string, a ...any) error   { return &UsageError{fmt.Sprintf(format, a...)} }
 
+// CheckRoots reports whether Run would read the roots at all, as the same
+// RefusedError or UsageError Run gives, without reading any file.
+func CheckRoots(roots []string, opts Options) error {
+	_, _, err := resolveRoots(roots, opts.Home)
+	return err
+}
+
 // Run scans the roots and returns what it found. It reads every file but
 // reports only facts about it, never its body.
 func Run(ctx context.Context, roots []string, opts Options) (Result, error) {

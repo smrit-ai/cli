@@ -85,6 +85,8 @@ func Validate(ctx context.Context, p Plan, res scan.Result, spaces []Space, obje
 		if !found {
 			if skipped[pe.Path] == scan.SkipSymlink {
 				refuse("This file is a symlink, and smrit never follows one.")
+			} else if res.Truncated {
+				refuse("The folder has more than %d files and smrit reads only the first %d, so this file was cut off. Plan a smaller folder.", scan.DefaultMaxFiles, scan.DefaultMaxFiles)
 			} else {
 				refuse("This file is not in the folder the plan names, or it cannot be read.")
 			}
@@ -191,6 +193,11 @@ func pathProblem(p string) string {
 	const outside = "This path is outside the plan's folder."
 	if p == "" || strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\\\x00") {
 		return outside
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f {
+			return "This path holds a control character."
+		}
 	}
 	for _, seg := range strings.Split(p, "/") {
 		if seg == ".." || seg == "." || seg == "" {

@@ -155,3 +155,22 @@ func TestPlanRefusals(t *testing.T) {
 		}
 	})
 }
+
+func TestPlanPathWithControlCharacterIsRefused(t *testing.T) {
+	res := scan.Result{Files: []scan.File{file("ok.md", "document")}}
+	for _, p := range []string{"a\x01b.md", "a\x1bb.md", "a\x7fb.md", "a\nb.md"} {
+		_, bad := Validate(context.Background(), Plan{Root: "/r", Entries: []PlanEntry{{Path: p, Kind: "document", Space: "engineering", Type: "t"}}}, res, spaces, true)
+		if len(bad) != 1 || !strings.Contains(bad[0].Reason, "control character") {
+			t.Errorf("%q: %+v", p, bad)
+		}
+	}
+}
+
+func TestTruncatedScanSaysTheFolderHasMoreFiles(t *testing.T) {
+	res := scan.Result{Truncated: true, Files: []scan.File{file("ok.md", "document")}}
+	e := PlanEntry{Path: "late.md", Kind: "document", Space: "engineering", Type: "t"}
+	_, bad := Validate(context.Background(), Plan{Root: "/r", Entries: []PlanEntry{e}}, res, spaces, true)
+	if len(bad) != 1 || !strings.Contains(bad[0].Reason, "more than 5000 files") || strings.Contains(bad[0].Reason, "not in the folder") {
+		t.Fatalf("%+v", bad)
+	}
+}

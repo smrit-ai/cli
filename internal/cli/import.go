@@ -78,6 +78,9 @@ func importCommand(s *Services) Command {
 			}
 			env.Result(importOutput{rep})
 			if rep.Refused > 0 {
+				if rep.Refused == len(rep.Entries) {
+					return ExitRefused
+				}
 				return ExitPartial
 			}
 			return ExitOK
