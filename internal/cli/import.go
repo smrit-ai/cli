@@ -69,8 +69,12 @@ func (o runOutput) String() string {
 	if o.MapError != "" {
 		fmt.Fprintf(&b, "Import map: %s\n", printable(o.MapError))
 	}
-	fmt.Fprintf(&b, "%d created, %d updated, %d unchanged, %d failed, %d refused, %d skipped.",
-		o.Created, o.Updated, o.Unchanged, o.Failed, o.Refused, o.Skipped)
+	exists := ""
+	if o.Exists > 0 {
+		exists = fmt.Sprintf(" %d already in Smrit,", o.Exists)
+	}
+	fmt.Fprintf(&b, "%d created, %d updated, %d unchanged,%s %d failed, %d refused, %d skipped.",
+		o.Created, o.Updated, o.Unchanged, exists, o.Failed, o.Refused, o.Skipped)
 	return b.String()
 }
 
@@ -137,7 +141,7 @@ func importCommand(s *Services) Command {
 				return code
 			}
 			env.Result(runOutput{rep})
-			return refusedExit(rep.Refused, rep.Failed+rep.Skipped, len(rep.Entries))
+			return refusedExit(rep.Refused, rep.Failed+rep.Skipped+rep.Exists, len(rep.Entries))
 		},
 	}
 }

@@ -24,7 +24,9 @@ type importFake struct {
 	preview int // status for the preview route; 0 is 200
 	// badHash makes a commit answer a received hash that is not the sent one.
 	badHash bool
-	tools   []string
+	// duplicate refuses every create_document as a name already taken.
+	duplicate bool
+	tools     []string
 }
 
 func newImportFake(t *testing.T) (*importFake, *httptest.Server) {
@@ -67,7 +69,12 @@ func newImportFake(t *testing.T) (*importFake, *httptest.Server) {
 		}
 		f.mu.Lock()
 		f.tools = append(f.tools, m.Params.Name)
+		duplicate := f.duplicate
 		f.mu.Unlock()
+		if m.Params.Name == "create_document" && duplicate {
+			io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"this space already has a document named 'tasks': DocTTTTTTTTTTTTTTTTTT."}]}}`)
+			return
+		}
 		if m.Params.Name == "create_document" {
 			io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"document_id\":\"MapIdMMMMMMMMMMMMMMMM\",\"revision\":1}"}]}}`)
 			return
@@ -317,5 +324,26 @@ func TestImportRefusedRootExits4BeforeAnyRequest(t *testing.T) {
 	code, _, errs := runCmd(t, svc, "import", plan, "--dry-run")
 	if code != ExitRefused || !strings.Contains(errs, "smrit import will not") || len(f.paths) != 0 {
 		t.Fatalf("exit %d %q %v", code, errs, f.paths)
+	}
+}
+
+func TestImportWorkbookAlreadyInSmritExits1AndSaysSo(t *testing.T) {
+	f, srv := newImportFake(t)
+	f.duplicate = true
+	svc := setup(t, srv, prof("acme", orgID))
+	plan := writePlan(t, `[{"path":"tasks.csv","kind":"workbook","space":"engineering","title":"Tasks","columns":[{"name":"a","type":"text"}]}]`,
+		map[string]string{"tasks.csv": "a\nx\n"})
+	code, out, errs := runCmd(t, svc, "--json=false", "import", plan)
+	if code != ExitPartial {
+		t.Fatalf("exit %d: %s %s", code, out, errs)
+	}
+	for _, want := range []string{"tasks.csv  workbook  exists: Smrit already has a document with this workbook's title in this space",
+		"0 created, 0 updated, 0 unchanged, 1 already in Smrit, 0 failed, 0 refused, 0 skipped."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %q:\n%s", want, out)
+		}
+	}
+	if slices.Contains(f.tools, "write_workbook") || slices.Contains(f.tools, "write_records") {
+		t.Fatalf("wrote after the duplicate: %v", f.tools)
 	}
 }

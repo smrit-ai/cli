@@ -14,14 +14,21 @@ import (
 
 const root = "../.."
 
-// declares reports whether the file declares or assigns an identifier named Address.
-func declaresAddress(f *ast.File) bool {
+// compiledIn names each compiled in origin and the release and dev files
+// that alone may declare it.
+var compiledIn = map[string][2]string{
+	"Address":     {"address.go", "address_dev.go"},
+	"TroveOrigin": {"trove.go", "trove_dev.go"},
+}
+
+// declares reports whether the file declares or assigns an identifier named name.
+func declares(f *ast.File, name string) bool {
 	found := false
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.ValueSpec:
-			for _, name := range x.Names {
-				if name.Name == "Address" {
+			for _, n := range x.Names {
+				if n.Name == name {
 					found = true
 				}
 			}
@@ -29,17 +36,17 @@ func declaresAddress(f *ast.File) bool {
 			for _, lhs := range x.Lhs {
 				switch l := lhs.(type) {
 				case *ast.Ident:
-					if l.Name == "Address" {
+					if l.Name == name {
 						found = true
 					}
 				case *ast.SelectorExpr:
-					if l.Sel.Name == "Address" {
+					if l.Sel.Name == name {
 						found = true
 					}
 				}
 			}
 		case *ast.IncDecStmt:
-			if s, ok := x.X.(*ast.SelectorExpr); ok && s.Sel.Name == "Address" {
+			if s, ok := x.X.(*ast.SelectorExpr); ok && s.Sel.Name == name {
 				found = true
 			}
 		}
@@ -73,8 +80,11 @@ func TestReleaseAddressIsConstant(t *testing.T) {
 		}
 		base := filepath.Base(path)
 		inServer := filepath.Base(filepath.Dir(path)) == "server"
-		if declaresAddress(full) && base != "address_dev.go" && base != "address.go" {
-			t.Errorf("%s declares or assigns Address; only address.go and address_dev.go may", path)
+		// Each compiled in origin is declared in its two files and nowhere else.
+		for name, files := range compiledIn {
+			if declares(full, name) && (!inServer || (base != files[0] && base != files[1])) {
+				t.Errorf("%s declares or assigns %s; only %s and %s may", path, name, files[0], files[1])
+			}
 		}
 		if inServer {
 			for _, imp := range f.Imports {
@@ -103,4 +113,41 @@ func TestReleaseAddressValueIsFixed(t *testing.T) {
 	if !strings.Contains(s, `const Address = "https://mcp.smrit.ai"`) {
 		t.Error("release Address must be the constant https://mcp.smrit.ai")
 	}
+}
+
+func TestReleaseTroveOriginValueIsFixed(t *testing.T) {
+	src, err := os.ReadFile("trove.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(src)
+	if !strings.Contains(s, "//go:build !dev") {
+		t.Error("trove.go must carry the !dev build tag")
+	}
+	if !strings.Contains(s, `const TroveOrigin = "https://trove.smrit.ai"`) {
+		t.Error("release TroveOrigin must be the constant https://trove.smrit.ai")
+	}
+	dev, err := os.ReadFile("trove_dev.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dev), "//go:build dev") || !strings.Contains(string(dev), "var TroveOrigin string") {
+		t.Error("trove_dev.go must carry the dev build tag and an unset TroveOrigin for ldflags")
+	}
+}
+
+func TestMakefileDevSetsBothOrigins(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join(root, "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(src), "\n") {
+		if strings.Contains(line, "-tags dev") {
+			if !strings.Contains(line, "internal/server.Address=") || !strings.Contains(line, "internal/server.TroveOrigin=") {
+				t.Fatalf("the dev build sets only part of the compiled in origins: %s", line)
+			}
+			return
+		}
+	}
+	t.Fatal("the Makefile has no dev build")
 }

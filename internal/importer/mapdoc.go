@@ -18,7 +18,7 @@ const (
 )
 
 // importMap writes one document listing every imported path with its
-// mention, in the space of the plan's first imported document. A run that
+// mention, in the space of the plan's first imported document or workbook. A run that
 // has made its map updates it; it never makes a second.
 func (r *runner) importMap() error {
 	body, space := r.mapBody()
@@ -106,8 +106,9 @@ func bodyOf(raw json.RawMessage) (string, bool) {
 }
 
 // mapBody is the map's Markdown table, in plan order, and the space it goes
-// in: every entry Smrit holds from this run, including one whose file is no
-// longer in the folder. Empty when nothing was imported.
+// in, the first imported document's or workbook's: every entry Smrit holds
+// from this run, including one whose file is no longer in the folder. Empty
+// when nothing was imported, or only objects, which have no space.
 func (r *runner) mapBody() (body, space string) {
 	valid := map[string]string{}
 	for _, e := range r.pr.entries {
@@ -121,7 +122,7 @@ func (r *runner) mapBody() (body, space string) {
 			continue
 		}
 		seen[e.Path] = true
-		if space == "" && e.Kind == scan.KindDocument {
+		if space == "" && e.Kind != scan.KindObject {
 			if space = valid[e.Path]; space == "" {
 				space = e.Space
 			}

@@ -192,7 +192,8 @@ func TestDryRunNamesOrgFirstAndSendsPlanFields(t *testing.T) {
 	}
 	p := plan.Plan{Root: root, Entries: []plan.PlanEntry{
 		docEntry("adr/0001.md"),
-		{Path: "tasks.csv", Kind: "workbook", Space: "engineering", Title: "Tasks"},
+		{Path: "tasks.csv", Kind: "workbook", Space: "engineering", Title: "Tasks",
+			Columns: []plan.Column{{Name: "a", Type: "number"}, {Name: "b", Type: "text"}}},
 		{Path: "logo.png", Kind: "object", Scope: "organization"},
 	}}
 	rep, err := DryRun(context.Background(), f.input(p))

@@ -45,6 +45,8 @@ type storeFake struct {
 	// as if the answer were lost on the way back.
 	loseAnswer map[string]bool
 	srv        *httptest.Server
+	// ext is the objects, workbooks and file store side.
+	ext *storeExt
 }
 
 type fakeDoc struct {
@@ -72,6 +74,7 @@ func newStore(t *testing.T) *storeFake {
 		f.route(w, r)
 	}))
 	t.Cleanup(f.srv.Close)
+	f.ext = newStoreExt(t, f)
 	return f
 }
 
@@ -110,7 +113,7 @@ func (f *storeFake) mcp(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal(b, &m)
 	w.Header().Set("Content-Type", "application/json")
 	if m.Method == "tools/list" {
-		io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"spaces"},{"name":"create_document"},{"name":"update_document"},{"name":"get_document_metadata"}]}}`)
+		io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"spaces"},{"name":"create_document"},{"name":"update_document"},{"name":"get_document_metadata"},{"name":"create_object"},{"name":"get_object"},{"name":"write_workbook"},{"name":"write_records"},{"name":"query_workbook"}]}}`)
 		return
 	}
 	f.mu.Lock()
@@ -162,7 +165,11 @@ func (f *storeFake) mcp(w http.ResponseWriter, r *http.Request) {
 			refuse("not found")
 			return
 		}
-		answer(map[string]any{"document_id": d.ID, "title": d.Title, "revision": d.Revisions})
+		meta := map[string]any{"document_id": d.ID, "title": d.Title, "revision": d.Revisions}
+		if wbs := f.ext.workbooksOf(d.ID); len(wbs) > 0 {
+			meta["workbooks"] = wbs
+		}
+		answer(meta)
 	case "update_document":
 		id, _ := a["document_id"].(string)
 		d := f.byID(id)
@@ -178,7 +185,9 @@ func (f *storeFake) mcp(w http.ResponseWriter, r *http.Request) {
 		d.Revisions++
 		answer(map[string]any{"document_id": d.ID, "revision": d.Revisions})
 	default:
-		refuse("unknown tool")
+		if !f.ext.call(w, m.Params.Name, a, answer, refuse) {
+			refuse("unknown tool")
+		}
 	}
 }
 
@@ -283,6 +292,7 @@ func (f *storeFake) opts(dir string) RunOptions {
 		MCP: c, Route: &Route{MCP: c}, StateDir: dir, PlanSHA256: "planhash",
 		Now:    func() time.Time { return time.Date(2026, 11, 9, 14, 30, 5, 0, time.UTC) },
 		Random: bytes.NewReader(bytes.Repeat([]byte{0xa1, 0xb2, 0xc3}, 50)),
+		trove:  f.ext.trove.URL, uploadHTTP: f.ext.trove.Client(),
 	}
 }
 
@@ -816,20 +826,6 @@ func TestDryRunAfterImportSaysUnchanged(t *testing.T) {
 	}
 	if rep.Unchanged != 2 {
 		t.Fatalf("%+v", rep)
-	}
-}
-
-func TestObjectsAndWorkbooksSkippedForNow(t *testing.T) {
-	root := t.TempDir()
-	write(t, root, "a.md", "# A\n")
-	write(t, root, "t.csv", "a,b\n1,2\n")
-	f := newStore(t)
-	p := docsPlan(root, "a.md")
-	p.Entries = append(p.Entries, plan.PlanEntry{Path: "t.csv", Kind: "workbook", Space: "engineering", Title: "T"})
-	rep := mustRun(t, p, f.opts(t.TempDir()))
-	w := entryOf(t, rep, "t.csv")
-	if w.Status != state.StatusSkipped || w.Error != "Importing files and workbooks comes in a later version." || rep.Skipped != 1 {
-		t.Fatalf("%+v", w)
 	}
 }
 

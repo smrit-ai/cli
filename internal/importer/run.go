@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"net/http"
 	"time"
 
 	"github.com/smrit-ai/cli/internal/plan"
@@ -38,6 +39,12 @@ type RunOptions struct {
 	// Began, when set, is told the organization and the run id once both
 	// are known, before anything is written to Smrit.
 	Began func(org Org, run string)
+
+	// trove and uploadHTTP stand in for the compiled file store origin and
+	// the upload client in this package's tests only; nothing outside the
+	// package can set them, so a real run always uses server.TroveOrigin.
+	trove      string
+	uploadHTTP *http.Client
 }
 
 // RunEntry is what the run did with one plan entry.
@@ -45,7 +52,7 @@ type RunEntry struct {
 	Path     string    `json:"path"`
 	Kind     string    `json:"kind"`
 	Space    string    `json:"space"`
-	Status   string    `json:"status"` // created, updated, unchanged, failed, refused, skipped, pending
+	Status   string    `json:"status"` // created, updated, unchanged, exists, failed, refused, skipped, pending
 	ID       string    `json:"id"`
 	Error    string    `json:"error"`
 	Type     string    `json:"type"`
@@ -68,6 +75,7 @@ type RunReport struct {
 	Created   int           `json:"created"`
 	Updated   int           `json:"updated"`
 	Unchanged int           `json:"unchanged"`
+	Exists    int           `json:"exists"`
 	Failed    int           `json:"failed"`
 	Refused   int           `json:"refused"`
 	Skipped   int           `json:"skipped"`
@@ -75,7 +83,6 @@ type RunReport struct {
 
 // Sentences of a run.
 const (
-	notYet = "Importing files and workbooks comes in a later version."
 	// statusPending is an entry the run had not reached when it stopped.
 	statusPending = "pending"
 	hashMismatch  = "The bytes Smrit received differ from the bytes sent."
@@ -182,23 +189,6 @@ func (r *runner) all() error {
 		}
 	}
 	r.st.Phase = state.PhaseFinished
-	return r.save()
-}
-
-// objects is where files become Smrit objects. Not built yet: each object
-// entry is skipped with its reason.
-func (r *runner) objects(es []plan.Entry) error { return r.skipAll(es) }
-
-// workbooks is where CSV files become workbooks. Not built yet.
-func (r *runner) workbooks(es []plan.Entry) error { return r.skipAll(es) }
-
-func (r *runner) skipAll(es []plan.Entry) error {
-	for _, e := range es {
-		r.record(e, state.EntryState{Kind: e.Kind, SourceSHA256: e.SHA256, Status: state.StatusSkipped, Error: notYet, Phase: r.st.Phase})
-	}
-	if len(es) == 0 {
-		return nil
-	}
 	return r.save()
 }
 
@@ -394,6 +384,8 @@ func (r *runner) report(rep RunReport) RunReport {
 			rep.Updated++
 		case state.StatusUnchanged:
 			rep.Unchanged++
+		case state.StatusExists:
+			rep.Exists++
 		case state.StatusFailed:
 			rep.Failed++
 		case state.StatusRefused:

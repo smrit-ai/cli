@@ -271,7 +271,8 @@ func previewAction(it PreviewItem) (action, reason string) {
 
 // DryRun previews a plan and writes nothing. It scans the plan's root again
 // now and trusts no earlier scan. Documents are sent to the preview route;
-// workbooks and objects are checked here and reported as create.
+// workbooks and objects are checked here, a CSV row by row, and reported as
+// create or refused.
 func DryRun(ctx context.Context, in Input) (Report, error) {
 	var rep Report
 	pr, err := prepare(ctx, in.Plan, in.MCP, in.Scan)
@@ -287,8 +288,24 @@ func DryRun(ctx context.Context, in Input) (Report, error) {
 	for _, e := range pr.entries {
 		out[e.Index] = ReportEntry{Path: e.Path, Kind: e.Kind, Space: e.Space, Action: ActionCreate, Similar: []Similar{},
 			Type: e.Type, Slug: e.Slug, Title: e.Title}
-		if e.Kind == scan.KindDocument {
+		r := &out[e.Index]
+		switch e.Kind {
+		case scan.KindDocument:
 			docs = append(docs, e)
+		case scan.KindWorkbook:
+			// Every row is checked now, as the run checks it before it
+			// writes anything.
+			if _, reason := readWorkbook(e); reason != "" {
+				r.Action, r.Reason = ActionRefused, reason
+			}
+		case scan.KindObject:
+			if _, ok := objectType(e); !ok {
+				r.Action, r.Reason = ActionRefused, objectBadType
+			} else if e.Size > MaxObjectBytes {
+				r.Action, r.Reason = ActionRefused, objectTooBig
+			} else if _, err := readExact(e); err != nil {
+				r.Action, r.Reason = ActionRefused, err.Error()
+			}
 		}
 	}
 	res, err := previewAll(ctx, in.Route, docs, newLinkIndex(pr))
@@ -370,7 +387,9 @@ func Batches(entries []plan.Entry) [][]plan.Entry {
 }
 
 // readExact reads the file the rescan listed, refusing a link and any file
-// whose bytes are not the ones the rescan hashed.
+// whose bytes are not the ones the rescan hashed. It reads at most one byte
+// more than the rescan's size, so each kind's own size limit, checked
+// before, bounds what it holds.
 func readExact(e plan.Entry) ([]byte, error) {
 	changed := errors.New("This file changed while it was being read.")
 	f, err := os.OpenFile(e.Abs, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
@@ -382,7 +401,7 @@ func readExact(e plan.Entry) ([]byte, error) {
 	if err != nil || !st.Mode().IsRegular() {
 		return nil, errors.New("This file could not be read.")
 	}
-	data, err := io.ReadAll(io.LimitReader(f, scan.MaxDocumentBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, e.Size+1))
 	if err != nil {
 		return nil, errors.New("This file could not be read.")
 	}

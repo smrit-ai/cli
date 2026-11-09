@@ -35,6 +35,10 @@ const (
 	StatusFailed    = "failed"
 	StatusRefused   = "refused"
 	StatusSkipped   = "skipped"
+	// StatusExists is a workbook whose describing document Smrit already
+	// has under the same name, from an earlier run whose state is gone.
+	// Nothing was written for it.
+	StatusExists = "exists"
 )
 
 // Done reports whether status means Smrit holds the entry.
@@ -57,10 +61,16 @@ type EntryState struct {
 	SourceSHA256 string `json:"source_sha256"`
 	SentSHA256   string `json:"sent_sha256,omitempty"`
 	Status       string `json:"status"`
-	// ID is the document's or object's id in Smrit, once known.
-	ID    string `json:"id,omitempty"`
-	Error string `json:"error,omitempty"`
-	Phase string `json:"phase,omitempty"`
+	// ID is the document's or object's id in Smrit, once known; for a
+	// workbook, its describing document's.
+	ID string `json:"id,omitempty"`
+	// Workbook is a workbook entry's workbook id, once made, and Rows how
+	// many of its CSV rows Smrit was last known to hold, so a resume
+	// carries on without writing a row twice.
+	Workbook string `json:"workbook,omitempty"`
+	Rows     int    `json:"rows,omitempty"`
+	Error    string `json:"error,omitempty"`
+	Phase    string `json:"phase,omitempty"`
 }
 
 // Run is one import run, kept so it can be resumed and later retired.
