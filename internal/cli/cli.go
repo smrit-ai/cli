@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -56,12 +57,14 @@ type Env struct {
 // readable text otherwise.
 func (e *Env) Result(v any) {
 	if e.JSON {
-		b, err := json.Marshal(v)
-		if err != nil {
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(v); err != nil {
 			fmt.Fprintf(e.Stderr, "Could not encode the result: %v\n", err)
 			return
 		}
-		e.Stdout.Write(append(b, '\n'))
+		e.Stdout.Write(buf.Bytes())
 		return
 	}
 	switch x := v.(type) {
@@ -102,6 +105,19 @@ func Main(table []Command, args []string) int {
 	return Run(context.Background(), table, args, os.Stdout, os.Stderr, IsTerminal(os.Stdout))
 }
 
+// Validate checks the table before anything runs. The json flag belongs to
+// the shell around every command, so a command may not declare its own.
+func Validate(table []Command) error {
+	for _, c := range table {
+		for _, f := range c.Flags {
+			if f.Name == "json" {
+				return fmt.Errorf("Command %s declares a json flag, which is reserved for every command.", c.Name)
+			}
+		}
+	}
+	return nil
+}
+
 func usageError(stderr io.Writer, format string, a ...any) int {
 	fmt.Fprintf(stderr, format+"\n", a...)
 	return ExitUsage
@@ -110,6 +126,9 @@ func usageError(stderr io.Writer, format string, a ...any) int {
 // Run parses global flags, finds the command and runs it. JSON output is the
 // default when stdout is not a terminal; --json and --json=false override it.
 func Run(ctx context.Context, table []Command, args []string, stdout, stderr io.Writer, stdoutIsTerminal bool) int {
+	if err := Validate(table); err != nil {
+		return usageError(stderr, "%v", err)
+	}
 	jsonMode := !stdoutIsTerminal
 	i := 0
 	for ; i < len(args); i++ {
@@ -164,7 +183,7 @@ func Run(ctx context.Context, table []Command, args []string, stdout, stderr io.
 		}
 	}
 	// Commands may also take --json after the command name.
-	jsonFlag := fs.String("json", "", "")
+	jsonFlag := fs.Bool("json", false, "")
 	if err := fs.Parse(rest); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			writeCommandHelp(stdout, cmd)
@@ -173,15 +192,11 @@ func Run(ctx context.Context, table []Command, args []string, stdout, stderr io.
 		msg := strings.TrimPrefix(err.Error(), "flag provided but not defined: ")
 		return usageError(stderr, "Unknown or invalid flag %s for smrit %s.", msg, cmd.Name)
 	}
-	switch *jsonFlag {
-	case "":
-	case "true":
-		jsonMode = true
-	case "false":
-		jsonMode = false
-	default:
-		return usageError(stderr, "The --json flag takes true or false.")
-	}
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "json" {
+			jsonMode = *jsonFlag
+		}
+	})
 	flags := map[string]string{}
 	for n, p := range vals {
 		flags[n] = *p

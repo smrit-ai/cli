@@ -1,6 +1,5 @@
 //go:build dev
 
-// Package server holds the address of the Smrit server this binary talks to.
 package server
 
 // Address is set at link time in a dev build:

@@ -126,3 +126,53 @@ func TestNoDashPunctuationInMessages(t *testing.T) {
 		t.Fatalf("dash punctuation in %q", errb)
 	}
 }
+
+func TestJSONFlagAfterCommand(t *testing.T) {
+	table := []Command{echo()}
+	cases := []struct {
+		name string
+		tty  bool
+		args []string
+		json bool
+		pos  string
+	}{
+		{"bare json", true, []string{"echo", "--json"}, true, ""},
+		{"json false", false, []string{"echo", "--json=false"}, false, ""},
+		{"json then positional", true, []string{"echo", "--json", "x"}, true, "x"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, out, errb := run(t, table, c.tty, c.args...)
+			if code != ExitOK {
+				t.Fatalf("exit %d stderr %q", code, errb)
+			}
+			if got := strings.HasPrefix(out, "{"); got != c.json {
+				t.Fatalf("json=%v want %v: %q", got, c.json, out)
+			}
+			if c.pos != "" && !strings.Contains(out, c.pos) {
+				t.Fatalf("positional %q lost: %q", c.pos, out)
+			}
+		})
+	}
+}
+
+func TestCommandMayNotDeclareJSONFlag(t *testing.T) {
+	bad := []Command{{Name: "bad", Flags: []Flag{{Name: "json", Bool: true}},
+		Run: func(context.Context, *Env, []string) int { return ExitOK }}}
+	if err := Validate(bad); err == nil || !strings.Contains(err.Error(), "json") {
+		t.Fatalf("want a clear error, got %v", err)
+	}
+	code, _, errb := run(t, bad, false, "bad")
+	if code != ExitUsage || errb == "" {
+		t.Fatalf("code %d stderr %q", code, errb)
+	}
+}
+
+func TestResultDoesNotEscapeHTML(t *testing.T) {
+	var out bytes.Buffer
+	env := &Env{Stdout: &out, Stderr: &out, JSON: true}
+	env.Result(map[string]any{"a": "<b>&"})
+	if !strings.Contains(out.String(), "<b>&") {
+		t.Fatalf("escaped: %q", out.String())
+	}
+}
