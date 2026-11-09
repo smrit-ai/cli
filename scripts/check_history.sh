@@ -2,7 +2,8 @@
 # Checks the whole git history before the repository is trusted as public:
 #   1. no commit message carries a trailer or a generated-with line;
 #   2. no file version ever committed holds anything shaped like a credential,
-#      other than the fake values listed in scripts/history_allowlist.txt.
+#      other than the fake values listed in scripts/history_allowlist.txt,
+#      each pinned to the one file version (blob) it covers.
 # A report names commit, path and pattern, never the matching text.
 set -eu
 

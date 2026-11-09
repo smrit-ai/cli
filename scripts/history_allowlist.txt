@@ -1,45 +1,66 @@
-# Known fake values that the history scan is allowed to find, one "path pattern"
-# pair per line. Each is a synthetic placeholder (repeated characters, the
-# documented example AWS key, short made up passwords) or an identifier named
-# "secret" or "password" in code, kept in tests so the secret patterns stay
-# proven. Anything not listed here fails the scan.
-internal/cli/scan_test.go aws-access-key-id
-internal/importer/importer_test.go aws-access-key-id
-internal/importer/objects_test.go url-credentials
-internal/scan/classify.go password-assignment
-internal/scan/scan_test.go aws-access-key-id
-internal/scan/scan_test.go password-assignment
-internal/scan/scan.go password-assignment
-internal/store/keychain_darwin_test.go password-assignment
-internal/upgrade/upgrade_test.go url-credentials
-scripts/secret_cases.py aws-access-key-id
-scripts/secret_cases.py jwt
-scripts/secret_cases.py password-assignment
-scripts/secret_cases.py private-key
-scripts/secret_cases.py slack-token
-scripts/secret_cases.py slack-webhook
-scripts/secret_cases.py token-assignment
-scripts/secret_cases.py url-credentials
-testdata/secret_cases.json anthropic-key
-testdata/secret_cases.json aws-access-key-id
-testdata/secret_cases.json aws-secret-access-key
-testdata/secret_cases.json bearer-token
-testdata/secret_cases.json github-pat
-testdata/secret_cases.json github-token
-testdata/secret_cases.json gitlab-token
-testdata/secret_cases.json google-api-key
-testdata/secret_cases.json google-client-secret
-testdata/secret_cases.json google-oauth-token
-testdata/secret_cases.json jwt
-testdata/secret_cases.json npm-token
-testdata/secret_cases.json openai-key
-testdata/secret_cases.json openai-project-key
-testdata/secret_cases.json password-assignment
-testdata/secret_cases.json private-key
-testdata/secret_cases.json slack-app-token
-testdata/secret_cases.json slack-token
-testdata/secret_cases.json slack-webhook
-testdata/secret_cases.json smrit-token
-testdata/secret_cases.json stripe-live-key
-testdata/secret_cases.json token-assignment
-testdata/secret_cases.json url-credentials
+# Known fake values that the history scan is allowed to find, one
+# "path pattern blob" line per version of a file. Each is a synthetic
+# placeholder (repeated characters, the documented example AWS key, short made
+# up passwords) or an identifier named "secret" or "password" in code, kept in
+# tests so the secret patterns stay proven. A line covers that one blob only:
+# a new version of a listed file is a finding until a person has read it and
+# added its line. go run ./cmd/historyscan -lines . prints a line for every
+# hit. Anything not listed here fails the scan.
+internal/cli/scan_test.go aws-access-key-id bc083ed9d4ef8a755e2a6b74d054bc0e5268c996
+internal/importer/importer_test.go aws-access-key-id 56715bda8b2761f7f36066d4c89dcf49f819a907
+internal/importer/importer_test.go aws-access-key-id 62ff938a761f9d5aaafff6e581b7ae9e219baf1f
+internal/importer/importer_test.go aws-access-key-id 982ec1fdeabe93872523283d1e295b0abcee3833
+internal/importer/importer_test.go aws-access-key-id a35b1894623995323d5d013a6857dad2a10060dc
+internal/importer/objects_test.go url-credentials 2fbf67e1b97f003593ccefb4af357a8ba61ff670
+internal/importer/objects_test.go url-credentials 409de0d94ba32fa69bd9143071591771ab9d5ead
+internal/importer/objects_test.go url-credentials c6cb4e718b06f12077157da3678a7e92276fcf38
+internal/scan/classify.go password-assignment cb671cb997adfe4f8bbedebadeb0efc8faf0bc1d
+internal/scan/classify.go password-assignment fe94f687603ba443f002556bcc32bec0611f7131
+internal/scan/scan.go password-assignment 1a6bdde5b09ac4b407c83cd354d6a381740ab7c1
+internal/scan/scan.go password-assignment 25d05dfa5cbc6a2aeb3b0179091d43d62522cf9f
+internal/scan/scan.go password-assignment 40756ea54caa41543fe198a3ed395e0dd108db46
+internal/scan/scan.go password-assignment 7e58bc596e5aac6d55a3c76bd049629810b62aa5
+internal/scan/scan.go password-assignment 8afba0f14d7eab87f870b287ec24015058f803af
+internal/scan/scan.go password-assignment 9bc910d054a78d5159fccb609862b4882fc5bf8e
+internal/scan/scan.go password-assignment e95b45d046af76420a9f4f3c27bec13b2e31c14d
+internal/scan/scan_test.go aws-access-key-id 070173fe7fa020fc097e599edf33f39aa3aaffab
+internal/scan/scan_test.go aws-access-key-id 11d09599ea1ecd3954989a2297832aa816a3e908
+internal/scan/scan_test.go aws-access-key-id 5d3ce061aa262005afb68ff4d0ccab298c4651c3
+internal/scan/scan_test.go aws-access-key-id d0f46dc30ca77fc0f3468e6ec62e69522d823226
+internal/scan/scan_test.go password-assignment 070173fe7fa020fc097e599edf33f39aa3aaffab
+internal/scan/scan_test.go password-assignment 11d09599ea1ecd3954989a2297832aa816a3e908
+internal/scan/scan_test.go password-assignment 5d3ce061aa262005afb68ff4d0ccab298c4651c3
+internal/scan/scan_test.go password-assignment d0f46dc30ca77fc0f3468e6ec62e69522d823226
+internal/store/keychain_darwin_test.go password-assignment d1f612abe85f5aed5ac5682b746010e7e99537d9
+internal/upgrade/upgrade_test.go url-credentials be81450828aef3fce78ce579d0ba25618727093f
+scripts/secret_cases.py aws-access-key-id e0cf194f2eeccb14c0c91b9ffef0114f28831440
+scripts/secret_cases.py jwt e0cf194f2eeccb14c0c91b9ffef0114f28831440
+scripts/secret_cases.py password-assignment e0cf194f2eeccb14c0c91b9ffef0114f28831440
+scripts/secret_cases.py private-key e0cf194f2eeccb14c0c91b9ffef0114f28831440
+scripts/secret_cases.py slack-token e0cf194f2eeccb14c0c91b9ffef0114f28831440
+scripts/secret_cases.py slack-webhook e0cf194f2eeccb14c0c91b9ffef0114f28831440
+scripts/secret_cases.py token-assignment e0cf194f2eeccb14c0c91b9ffef0114f28831440
+scripts/secret_cases.py url-credentials e0cf194f2eeccb14c0c91b9ffef0114f28831440
+testdata/secret_cases.json anthropic-key ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json aws-access-key-id ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json aws-secret-access-key ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json bearer-token ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json github-pat ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json github-token ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json gitlab-token ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json google-api-key ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json google-client-secret ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json google-oauth-token ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json jwt ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json npm-token ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json openai-key ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json openai-project-key ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json password-assignment ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json private-key ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json slack-app-token ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json slack-token ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json slack-webhook ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json smrit-token ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json stripe-live-key ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json token-assignment ffd27e026449779f2ec1cf0b68a6224d84e133ae
+testdata/secret_cases.json url-credentials ffd27e026449779f2ec1cf0b68a6224d84e133ae

@@ -4,8 +4,9 @@
 // part of the smrit binary.
 //
 // A report names the commit, the path and the pattern, and never the text that
-// matched. Known fake values in test fixtures are allowed by a list of path and
-// pattern pairs; anything else is a finding.
+// matched. Known fake values in test fixtures are allowed by a list of path,
+// pattern and blob id lines, each covering one version of one file; anything
+// else, a later version of a listed file included, is a finding.
 package historyscan
 
 import (
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,12 +23,14 @@ import (
 	"github.com/smrit-ai/cli/internal/scan"
 )
 
-// Allow is one permitted hit: a file path and the pattern allowed in it.
-type Allow struct{ Path, Pattern string }
+// Allow is one permitted hit: a file path, the pattern allowed in it, and
+// the one version of the file, by blob id, the permission covers.
+type Allow struct{ Path, Pattern, Blob string }
 
 // Hit is one blob that matched one pattern.
 type Hit struct {
 	Commit  string
+	Blob    string
 	Path    string
 	Pattern string
 	Allowed bool
@@ -50,8 +54,12 @@ func (r Result) Findings() []Hit {
 	return out
 }
 
-// ParseAllowlist reads lines of "path pattern". Blank lines and lines starting
-// with # are ignored.
+// blobID is a full git object id, SHA-1 or SHA-256, in lower case.
+var blobID = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// ParseAllowlist reads lines of "path pattern blob". Blank lines and lines
+// starting with # are ignored. A line covers that one blob only, so a key
+// committed later into an allowlisted file is still a finding.
 func ParseAllowlist(text string) ([]Allow, error) {
 	var out []Allow
 	for i, line := range strings.Split(text, "\n") {
@@ -60,10 +68,13 @@ func ParseAllowlist(text string) ([]Allow, error) {
 			continue
 		}
 		f := strings.Fields(line)
-		if len(f) != 2 {
-			return nil, fmt.Errorf("allowlist line %d: want \"path pattern\"", i+1)
+		if len(f) != 3 {
+			return nil, fmt.Errorf("allowlist line %d: want \"path pattern blob\"", i+1)
 		}
-		out = append(out, Allow{f[0], f[1]})
+		if !blobID.MatchString(f[2]) {
+			return nil, fmt.Errorf("allowlist line %d: %q is not a blob id", i+1, f[2])
+		}
+		out = append(out, Allow{f[0], f[1], f[2]})
 	}
 	return out, nil
 }
@@ -178,7 +189,7 @@ func Scan(dir string, allow []Allow) (Result, error) {
 					continue
 				}
 				seen[key] = true
-				res.Hits = append(res.Hits, Hit{Commit: w.commit, Path: w.path, Pattern: name, Allowed: allowed(allow, w.path, name)})
+				res.Hits = append(res.Hits, Hit{Commit: w.commit, Blob: b.sha, Path: w.path, Pattern: name, Allowed: allowed(allow, b.sha, w.path, name)})
 			}
 		}
 	}
@@ -195,11 +206,27 @@ func Scan(dir string, allow []Allow) (Result, error) {
 	return res, nil
 }
 
-func allowed(list []Allow, path, pattern string) bool {
+func allowed(list []Allow, blob, path, pattern string) bool {
 	for _, a := range list {
-		if a.Path == path && a.Pattern == pattern {
+		if a.Blob == blob && a.Path == path && a.Pattern == pattern {
 			return true
 		}
 	}
 	return false
+}
+
+// Lines are the allowlist lines that would allow every hit, sorted, one per
+// path, pattern and blob.
+func Lines(r Result) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, h := range r.Hits {
+		l := h.Path + " " + h.Pattern + " " + h.Blob
+		if !seen[l] {
+			seen[l] = true
+			out = append(out, l)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
