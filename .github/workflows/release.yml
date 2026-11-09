@@ -17,7 +17,7 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make test
-      - run: make release VERSION=${GITHUB_REF_NAME#v}
+      - run: make release VERSION="${GITHUB_REF_NAME#v}"
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}

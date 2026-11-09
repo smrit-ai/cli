@@ -12,12 +12,6 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# install.sh uses /usr/local/bin when it is writable; never clobber a real install there.
-if [ -w /usr/local/bin ] && [ -e /usr/local/bin/smrit ]; then
-	echo "Refusing to run: /usr/local/bin is writable and already holds a smrit."
-	exit 1
-fi
-
 case "$(uname -s)" in Darwin) os=darwin ;; *) os=linux ;; esac
 case "$(uname -m)" in x86_64 | amd64) arch=amd64 ;; *) arch=arm64 ;; esac
 asset="smrit_${os}_${arch}.tar.gz"
@@ -44,34 +38,61 @@ until python3 -c "import socket,sys; socket.create_connection(('127.0.0.1',$port
 done
 
 run_install() {
-	# $1 = release dir, $2 = home dir. PATH excludes /usr/local/bin writability concerns only
-	# when it is not writable; the test accepts either destination.
-	HOME="$2" SMRIT_INSTALL_BASE_URL="http://127.0.0.1:$port/$1" sh "$here/install.sh"
+	# $1 = release dir, $2 = a fresh directory used as HOME and, under it, the install dir.
+	# SMRIT_INSTALL_DIR keeps the test away from any system directory.
+	HOME="$2" SMRIT_INSTALL_DIR="$2/bin" SMRIT_INSTALL_BASE_URL="http://127.0.0.1:$port/$1" sh "$here/install.sh"
 }
 
 fail() { echo "FAIL: $1"; exit 1; }
 
-# A good release installs and runs.
+no_dashes() {
+	# Printed messages use no dash punctuation: no spaced hyphen, em dash or en dash.
+	case "$1" in
+		*" - "* | *" -- "* | *"—"* | *"–"*) fail "dash punctuation in output: $1" ;;
+	esac
+}
+
+expect_refused() {
+	# $1 = release dir, $2 = home, $3 = word the message must contain
+	if out="$(run_install "$1" "$2" 2>&1)"; then fail "$1 was accepted: $out"; fi
+	case "$out" in *"$3"*) ;; *) fail "$1: expected message containing $3, got: $out" ;; esac
+	[ ! -e "$2/bin/smrit" ] || fail "$1: binary installed anyway"
+	[ -z "$(ls -A "$2/bin" 2>/dev/null)" ] || fail "$1: files left in the install dir"
+	no_dashes "$out"
+}
+
+# A good release installs, replaces cleanly, and runs.
 mkdir -p "$work/home1"
 out="$(run_install good "$work/home1" 2>&1)" || fail "good release did not install: $out"
 case "$out" in *"0.0.0-fake"*) ;; *) fail "smrit --version did not run: $out" ;; esac
-if [ -x "$work/home1/.local/bin/smrit" ]; then
-	:
-elif [ -x /usr/local/bin/smrit ] && [ "$(/usr/local/bin/smrit --version 2>/dev/null)" = "0.0.0-fake" ]; then
-	echo "NOTE: /usr/local/bin was writable; removing the fake from it"
-	rm -f /usr/local/bin/smrit
-else
-	fail "no binary was installed"
-fi
-case "$out" in *" - "* | *"—"* | *"–"*) fail "installer output has dash punctuation: $out" ;; esac
+[ -x "$work/home1/bin/smrit" ] || fail "no binary in the install dir"
+no_dashes "$out"
+out="$(run_install good "$work/home1" 2>&1)" || fail "reinstall over an existing smrit failed: $out"
+[ -z "$(ls -A "$work/home1/bin" | grep -v '^smrit$' || true)" ] || fail "temp files left behind"
 
 # A bad checksum stops and installs nothing.
-mkdir -p "$work/home2"
-if out="$(run_install bad "$work/home2" 2>&1)"; then fail "bad checksum was accepted: $out"; fi
-case "$out" in *"checksum"*) ;; *) fail "no checksum message: $out" ;; esac
-[ ! -e "$work/home2/.local/bin/smrit" ] || fail "binary installed despite bad checksum"
-if [ -w /usr/local/bin ] 2>/dev/null; then
-	[ "$(/usr/local/bin/smrit --version 2>/dev/null || true)" != "0.0.0-fake" ] || fail "binary installed to /usr/local/bin despite bad checksum"
-fi
+mkdir -p "$work/home2"; expect_refused bad "$work/home2" "checksum"
+
+# A SHA256SUMS without a line for this asset, and one that only partly matches the name.
+mkdir -p "$work/missing" "$work/home3"
+cp "$work/good/$asset" "$work/missing/$asset"
+printf '%s  other_%s\n' "$(cut -d' ' -f1 "$work/good/SHA256SUMS")" "$asset" >"$work/missing/SHA256SUMS"
+expect_refused missing "$work/home3" "SHA256SUMS"
+
+# Two lines for one asset is ambiguous.
+mkdir -p "$work/dup" "$work/home4"
+cp "$work/good/$asset" "$work/dup/$asset"
+cat "$work/good/SHA256SUMS" "$work/good/SHA256SUMS" >"$work/dup/SHA256SUMS"
+expect_refused dup "$work/home4" "SHA256SUMS"
+
+# A failed download (404).
+mkdir -p "$work/home5"; expect_refused nonexistent "$work/home5" "download"
+
+# A hostile VERSION is refused before anything runs.
+marker="$work/pwned"
+if (cd "$here/.." && make release VERSION="1.0.0\"\$(touch $marker)\"" >/dev/null 2>&1); then fail "hostile VERSION accepted"; fi
+if (cd "$here/.." && make release VERSION='1.0.0";touch '"$marker"';"' >/dev/null 2>&1); then fail "hostile VERSION accepted"; fi
+[ ! -e "$marker" ] || fail "hostile VERSION executed"
+if (cd "$here/.." && make release VERSION= >/dev/null 2>&1); then fail "empty VERSION accepted"; fi
 
 echo "install tests passed"

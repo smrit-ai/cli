@@ -18,14 +18,16 @@ dev:
 	go build -tags dev -ldflags "-X $(MODULE)/internal/server.Address=$(SERVER)" -o bin/smrit ./cmd/smrit
 
 # make release VERSION=x.y.z writes the four tarballs, SHA256SUMS and install.sh to dist/.
+export VERSION
+
 release:
-	@test -n "$(VERSION)" || { echo "Set VERSION, for example: make release VERSION=0.1.0"; exit 1; }
+	@printf '%s' "$$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$$' || { echo "VERSION must look like 1.2.3, for example: make release VERSION=0.1.0"; exit 1; }
 	mkdir -p dist
 	@for t in $(TARGETS); do \
 		os=$${t%/*}; arch=$${t#*/}; \
 		stage=$$(mktemp -d); \
 		CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath \
-			-ldflags "-s -w -X $(MODULE)/internal/version.Version=$(VERSION)" \
+			-ldflags "-s -w -X $(MODULE)/internal/version.Version=$$VERSION" \
 			-o $$stage/smrit ./cmd/smrit || exit 1; \
 		tar -czf dist/smrit_$${os}_$${arch}.tar.gz -C $$stage smrit; \
 	done
