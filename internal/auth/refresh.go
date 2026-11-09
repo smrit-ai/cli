@@ -130,23 +130,28 @@ func (c *Client) AccessToken(ctx context.Context, p profile.Profile) (string, er
 	if tok, ok := HeadlessToken(); ok {
 		return tok, nil
 	}
-	return c.accessToken(ctx, p, false)
+	return c.accessToken(ctx, p, false, "")
 }
 
 // ForceRefresh refreshes p's access token whatever the cached expiry says,
-// for a server that refused a token the cache still held fresh. It takes the
-// same lock and follows the same rules as AccessToken, so invalid_grant and
-// invalid_client still sign out. With SMRIT_TOKEN set there is nothing to
-// refresh and it returns ErrNotSignedIn.
-func (c *Client) ForceRefresh(ctx context.Context, p profile.Profile) (string, error) {
+// for a server that refused a token the cache still held fresh. refused is
+// the token the server refused: when, inside the lock, the store holds a
+// different token that is still fresh, another call has already refreshed
+// and that token is returned without a second refresh. An empty refused
+// always refreshes. It takes the same lock and follows the same rules as
+// AccessToken, so invalid_grant and invalid_client still sign out. With
+// SMRIT_TOKEN set there is nothing to refresh and it returns ErrNotSignedIn.
+func (c *Client) ForceRefresh(ctx context.Context, p profile.Profile, refused string) (string, error) {
 	if _, ok := HeadlessToken(); ok {
 		return "", ErrNotSignedIn
 	}
-	return c.accessToken(ctx, p, true)
+	return c.accessToken(ctx, p, true, refused)
 }
 
-// accessToken is AccessToken; force skips the cache and always refreshes.
-func (c *Client) accessToken(ctx context.Context, p profile.Profile, force bool) (string, error) {
+// accessToken is AccessToken; force skips the cache and refreshes unless the
+// store, read inside the lock, holds a fresh token other than stale, the
+// one the server refused.
+func (c *Client) accessToken(ctx context.Context, p profile.Profile, force bool, stale string) (string, error) {
 	if !profile.ValidSlug(p.Org) || p.ClientID == "" || c.Store == nil {
 		return "", ErrNotSignedIn
 	}
@@ -166,11 +171,11 @@ func (c *Client) accessToken(ctx context.Context, p profile.Profile, force bool)
 		return "", err
 	}
 	defer unlock()
-	// Another process may have refreshed while this one waited. A forced
-	// refresh has no way to tell that token from the refused one, so it goes on.
+	// Another call may have refreshed while this one waited. A forced refresh
+	// takes that token only when it is not the one the server refused.
 	if tok, fresh, err := c.cached(p.Org); err != nil {
 		return "", fail(ErrUnavailable, err, "%v", err)
-	} else if fresh && !force {
+	} else if fresh && (!force || (stale != "" && tok != stale)) {
 		return tok, nil
 	}
 	// The profile as it is now, not the caller's copy: a login that finished

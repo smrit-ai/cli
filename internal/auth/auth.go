@@ -130,8 +130,8 @@ func Logout(ctx context.Context, p profile.Profile) error {
 
 // ForceRefresh refreshes the access token with the default client. See
 // Client.ForceRefresh.
-func ForceRefresh(ctx context.Context, p profile.Profile) (string, error) {
-	return Default().ForceRefresh(ctx, p)
+func ForceRefresh(ctx context.Context, p profile.Profile, refused string) (string, error) {
+	return Default().ForceRefresh(ctx, p, refused)
 }
 
 // HeadlessToken returns the token in SMRIT_TOKEN and true when it is set. A

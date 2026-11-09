@@ -550,7 +550,7 @@ func TestForceRefreshRefreshesAFreshToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, before := f.counts()
-	tok, err := c.ForceRefresh(ctx, p)
+	tok, err := c.ForceRefresh(ctx, p, cached)
 	if err != nil || tok == "" || tok == cached {
 		t.Fatalf("ForceRefresh = %q, %v; cached %q", tok, err, cached)
 	}
@@ -562,12 +562,68 @@ func TestForceRefreshRefreshesAFreshToken(t *testing.T) {
 	}
 }
 
+// Two calls that both saw a 401 for the same token refresh once: the second,
+// inside the lock, finds a fresh token that is not the refused one and uses it.
+func TestForceRefreshTwiceForOneRefusedTokenRefreshesOnce(t *testing.T) {
+	setHome(t)
+	f := newFake(t)
+	c := newClient(t, f)
+	p := seed(t, c, f)
+	ctx := testContext(t)
+	expires := time.Now().Add(time.Hour).Unix()
+	if err := c.Store.Put(accessKey("acme"), fmt.Sprintf("%d:access-refused", expires)); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	got := make([]string, 2)
+	errs := make([]error, 2)
+	for i := range got {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got[i], errs[i] = c.ForceRefresh(ctx, p, "access-refused")
+		}()
+	}
+	wg.Wait()
+	for i := range got {
+		if errs[i] != nil || got[i] == "" || got[i] == "access-refused" {
+			t.Fatalf("call %d = %q, %v", i, got[i], errs[i])
+		}
+	}
+	if got[0] != got[1] {
+		t.Fatalf("the two calls hold different tokens: %q %q", got[0], got[1])
+	}
+	if _, n := f.counts(); n != 1 {
+		t.Fatalf("%d refreshes reached the server, want 1", n)
+	}
+}
+
+// A stored token that differs from the refused one but is inside the early
+// window is refreshed all the same.
+func TestForceRefreshRefreshesADifferentTokenAboutToExpire(t *testing.T) {
+	setHome(t)
+	f := newFake(t)
+	c := newClient(t, f)
+	p := seed(t, c, f)
+	expires := time.Now().Add(early / 2).Unix()
+	if err := c.Store.Put(accessKey("acme"), fmt.Sprintf("%d:access-other", expires)); err != nil {
+		t.Fatal(err)
+	}
+	tok, err := c.ForceRefresh(testContext(t), p, "access-refused")
+	if err != nil || tok == "access-other" || tok == "" {
+		t.Fatalf("ForceRefresh = %q, %v", tok, err)
+	}
+	if _, n := f.counts(); n != 1 {
+		t.Fatalf("%d refreshes, want 1", n)
+	}
+}
+
 func TestForceRefreshHeadlessHasNothingToRefresh(t *testing.T) {
 	setHome(t)
 	t.Setenv(HeadlessEnv, "tok_headless")
 	f := newFake(t)
 	c := newClient(t, f)
-	if _, err := c.ForceRefresh(testContext(t), profile.Profile{Org: "acme"}); !errors.Is(err, ErrNotSignedIn) {
+	if _, err := c.ForceRefresh(testContext(t), profile.Profile{Org: "acme"}, "tok_headless"); !errors.Is(err, ErrNotSignedIn) {
 		t.Fatalf("%v", err)
 	}
 	if _, n := f.counts(); n != 0 {

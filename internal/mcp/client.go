@@ -65,9 +65,10 @@ type Client struct {
 	Version string
 	// Token returns the bearer token for one call.
 	Token func(ctx context.Context) (string, error)
-	// Refresh forces a new token after a 401. Nil means there is nothing to
-	// refresh (a headless token), and a 401 is final.
-	Refresh func(ctx context.Context) (string, error)
+	// Refresh forces a new token after a 401; refused is the token the server
+	// refused. Nil means there is nothing to refresh (a headless token), and a
+	// 401 is final.
+	Refresh func(ctx context.Context, refused string) (string, error)
 	HTTP    *http.Client
 	// Now and Sleep are the clock; nil means the real ones.
 	Now   func() time.Time
@@ -195,7 +196,9 @@ type Response struct {
 func (c *Client) Do(ctx context.Context, method, path string, header http.Header, body []byte) (*Response, error) {
 	refreshed := false
 	var forced string
-	for attempt := 0; ; attempt++ {
+	// waits counts the 429s waited out; a 401 retry is not one of them.
+	waits := 0
+	for {
 		if err := c.pace(ctx); err != nil {
 			return nil, err
 		}
@@ -226,9 +229,10 @@ func (c *Client) Do(ctx context.Context, method, path string, header http.Header
 		resp.Body.Close()
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests:
-			if attempt >= MaxRetries {
+			if waits >= MaxRetries {
 				return nil, errRateLimited
 			}
+			waits++
 			if err := c.sleep(ctx, retryAfter(resp.Header.Get("Retry-After"), c.now())); err != nil {
 				return nil, stopped(err)
 			}
@@ -239,7 +243,7 @@ func (c *Client) Do(ctx context.Context, method, path string, header http.Header
 				return nil, ErrSignedOut
 			}
 			refreshed = true
-			if forced, err = c.Refresh(ctx); err != nil {
+			if forced, err = c.Refresh(ctx, tok); err != nil {
 				return nil, err
 			}
 			continue

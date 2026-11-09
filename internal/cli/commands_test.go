@@ -465,8 +465,10 @@ func TestUnauthorizedRefreshesOnceThenSucceeds(t *testing.T) {
 	f.status = 401
 	f.mu.Unlock()
 	// The fake has one status for every request, so the refresh lifts it.
-	svc.Refresh = func(context.Context, profile.Profile) (string, error) {
+	var refused string
+	svc.Refresh = func(_ context.Context, _ profile.Profile, tok string) (string, error) {
 		refreshes++
+		refused = tok
 		f.mu.Lock()
 		f.status = 0
 		f.mu.Unlock()
@@ -476,13 +478,16 @@ func TestUnauthorizedRefreshesOnceThenSucceeds(t *testing.T) {
 	if code != ExitOK || refreshes != 1 || len(f.auths) != 2 || f.auths[1] != "Bearer tok_NEW" {
 		t.Fatalf("%d %q %d %v", code, errs, refreshes, f.auths)
 	}
+	if "Bearer "+refused != f.auths[0] {
+		t.Fatal("the refresh was not told which token the server refused")
+	}
 }
 
 func TestUnauthorizedTwiceExits3AfterOneRefresh(t *testing.T) {
 	f, srv := newMCP(t)
 	svc := setup(t, srv, prof("acme", orgID))
 	refreshes := 0
-	svc.Refresh = func(context.Context, profile.Profile) (string, error) { refreshes++; return "tok_NEW", nil }
+	svc.Refresh = func(context.Context, profile.Profile, string) (string, error) { refreshes++; return "tok_NEW", nil }
 	f.mu.Lock()
 	f.status = 401
 	f.mu.Unlock()
@@ -497,7 +502,7 @@ func TestHeadlessUnauthorizedExits3WithoutRefresh(t *testing.T) {
 	svc := setup(t, srv)
 	svc.Headless = func() (string, bool) { return fakeToken, true }
 	refreshes := 0
-	svc.Refresh = func(context.Context, profile.Profile) (string, error) { refreshes++; return "x", nil }
+	svc.Refresh = func(context.Context, profile.Profile, string) (string, error) { refreshes++; return "x", nil }
 	f.mu.Lock()
 	f.status = 401
 	f.mu.Unlock()

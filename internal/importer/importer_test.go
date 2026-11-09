@@ -447,7 +447,7 @@ func TestRouteRefreshesOnce401(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &mcp.Client{Origin: srv.URL, Version: "1", Token: func(context.Context) (string, error) { return "old", nil },
-		Refresh: func(context.Context) (string, error) { return "new", nil }}
+		Refresh: func(context.Context, string) (string, error) { return "new", nil }}
 	if _, err := (&Route{MCP: c}).Commit(context.Background(), "s", []Upload{{Path: "a.md", Data: []byte("x")}}); err != nil {
 		t.Fatal(err)
 	}

@@ -326,7 +326,7 @@ func TestUnauthorizedThenOKRefreshesOnceAndRetriesWithTheNewToken(t *testing.T) 
 	})
 	c := client(f, &clock{})
 	refreshes := 0
-	c.Refresh = func(context.Context) (string, error) { refreshes++; return "tok_NEW_456", nil }
+	c.Refresh = func(context.Context, string) (string, error) { refreshes++; return "tok_NEW_456", nil }
 	got, err := c.Call(context.Background(), "t", nil)
 	if err != nil || string(got) != `{"fine":true}` {
 		t.Fatalf("%s %v", got, err)
@@ -336,11 +336,66 @@ func TestUnauthorizedThenOKRefreshesOnceAndRetriesWithTheNewToken(t *testing.T) 
 	}
 }
 
+// The refresh is told which token the server refused, so a refresh another
+// call already made can be used instead of a second one.
+func TestUnauthorizedPassesTheRefusedTokenToRefresh(t *testing.T) {
+	f := newFake(t, func(n int, w http.ResponseWriter, r *http.Request) {
+		if n == 1 {
+			w.WriteHeader(401)
+			return
+		}
+		ok(w, `{"structuredContent":{"fine":true}}`)
+	})
+	c := client(f, &clock{})
+	var refused []string
+	c.Refresh = func(_ context.Context, tok string) (string, error) {
+		refused = append(refused, tok)
+		return "tok_NEW_456", nil
+	}
+	if _, err := c.Call(context.Background(), "t", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(refused) != 1 || refused[0] != fakeToken {
+		t.Fatalf("Refresh was told %q", refused)
+	}
+}
+
+// A 401 does not use up a 429 wait: a 401 and then three 429s still waits
+// three times and gets the answer.
+func TestUnauthorizedDoesNotSpendA429Wait(t *testing.T) {
+	f := newFake(t, func(n int, w http.ResponseWriter, r *http.Request) {
+		switch {
+		case n == 1:
+			w.WriteHeader(401)
+		case n <= 4:
+			w.Header().Set("Retry-After", "2")
+			w.WriteHeader(429)
+		default:
+			ok(w, `{"structuredContent":{"fine":true}}`)
+		}
+	})
+	clk := &clock{t: time.Unix(1000, 0)}
+	c := client(f, clk)
+	c.Refresh = func(context.Context, string) (string, error) { return "tok_NEW_456", nil }
+	got, err := c.Call(context.Background(), "t", nil)
+	if err != nil || string(got) != `{"fine":true}` {
+		t.Fatalf("%s %v", got, err)
+	}
+	if f.hits != 5 || len(clk.sleeps) != 3 {
+		t.Fatalf("hits %d sleeps %v", f.hits, clk.sleeps)
+	}
+	for i := 2; i <= 5; i++ {
+		if a := f.headers[i-1].Get("Authorization"); a != "Bearer tok_NEW_456" {
+			t.Fatalf("request %d sent %q", i, a)
+		}
+	}
+}
+
 func TestUnauthorizedTwiceRefreshesOnceAndSignsOut(t *testing.T) {
 	f := newFake(t, func(n int, w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) })
 	c := client(f, &clock{})
 	refreshes := 0
-	c.Refresh = func(context.Context) (string, error) { refreshes++; return "tok_NEW_456", nil }
+	c.Refresh = func(context.Context, string) (string, error) { refreshes++; return "tok_NEW_456", nil }
 	_, err := c.Call(context.Background(), "t", nil)
 	if !errors.Is(err, ErrSignedOut) || refreshes != 1 || f.hits != 2 {
 		t.Fatalf("%v, %d refreshes, %d requests", err, refreshes, f.hits)
@@ -359,7 +414,7 @@ func TestRefreshFailureEndsTheCall(t *testing.T) {
 	f := newFake(t, func(n int, w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) })
 	c := client(f, &clock{})
 	boom := errors.New("not signed in")
-	c.Refresh = func(context.Context) (string, error) { return "", boom }
+	c.Refresh = func(context.Context, string) (string, error) { return "", boom }
 	if _, err := c.Call(context.Background(), "t", nil); err != boom || f.hits != 1 {
 		t.Fatalf("%v, %d requests", err, f.hits)
 	}

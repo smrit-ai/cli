@@ -25,9 +25,9 @@ type Services struct {
 	Sleep  func(ctx context.Context, d time.Duration) error
 
 	Token func(ctx context.Context, p profile.Profile) (string, error)
-	// Refresh forces a new token after the server refused one. Nil in tests
-	// that never see a 401.
-	Refresh     func(ctx context.Context, p profile.Profile) (string, error)
+	// Refresh forces a new token after the server refused one, refused. Nil
+	// in tests that never see a 401.
+	Refresh     func(ctx context.Context, p profile.Profile, refused string) (string, error)
 	Login       func(ctx context.Context, o auth.LoginOptions) (profile.Profile, error)
 	Logout      func(ctx context.Context, p profile.Profile) error
 	Headless    func() (string, bool)
@@ -75,7 +75,7 @@ func (s *Services) client(env *Env) (*mcp.Client, int) {
 	c.Path = p.Endpoint
 	c.Token = func(ctx context.Context) (string, error) { return s.Token(ctx, p) }
 	if s.Refresh != nil {
-		c.Refresh = func(ctx context.Context) (string, error) { return s.Refresh(ctx, p) }
+		c.Refresh = func(ctx context.Context, refused string) (string, error) { return s.Refresh(ctx, p, refused) }
 	}
 	return c, 0
 }
