@@ -128,6 +128,19 @@
           "repeatable": false
         }
       ]
+    },
+    {
+      "name": "upgrade",
+      "summary": "Replace this smrit with the latest release, verified against its checksum. A copy a package manager installed is left to that package manager.",
+      "flags": [
+        {
+          "name": "check",
+          "usage": "Only report the latest version and this one. Nothing is downloaded.",
+          "default": "",
+          "bool": true,
+          "repeatable": false
+        }
+      ]
     }
   ],
   "exit_codes": [

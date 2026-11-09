@@ -12,6 +12,7 @@ import (
 	"github.com/smrit-ai/cli/internal/mcp"
 	"github.com/smrit-ai/cli/internal/profile"
 	"github.com/smrit-ai/cli/internal/server"
+	"github.com/smrit-ai/cli/internal/upgrade"
 	"github.com/smrit-ai/cli/internal/version"
 )
 
@@ -32,6 +33,9 @@ type Services struct {
 	Logout      func(ctx context.Context, p profile.Profile) error
 	Headless    func() (string, bool)
 	OpenBrowser func(url string) error
+	// Upgrader replaces the binary; nil is the compiled release address
+	// and the running binary.
+	Upgrader *upgrade.Upgrader
 }
 
 // DefaultServices is the real wiring.
@@ -49,7 +53,7 @@ func DefaultServices() *Services {
 
 // Commands is the command table for the given services.
 func Commands(s *Services) []Command {
-	return []Command{loginCommand(s), logoutCommand(s), statusCommand(s), callCommand(s), scanCommand(), importCommand(s), retireCommand()}
+	return []Command{loginCommand(s), logoutCommand(s), statusCommand(s), callCommand(s), scanCommand(), importCommand(s), retireCommand(), upgradeCommand(s)}
 }
 
 var orgFlag = Flag{Name: "org", Usage: "The organization to use, when signed in to several."}

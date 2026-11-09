@@ -20,6 +20,7 @@ var compiledIn = map[string][2]string{
 	"Address":     {"address.go", "address_dev.go"},
 	"TroveOrigin": {"trove.go", "trove_dev.go"},
 	"WebOrigin":   {"web.go", "web_dev.go"},
+	"ReleaseBase": {"release.go", "release_dev.go"},
 }
 
 // declares reports whether the file declares or assigns an identifier named name.
@@ -169,4 +170,22 @@ func TestMakefileDevSetsBothOrigins(t *testing.T) {
 		}
 	}
 	t.Fatal("the Makefile has no dev build")
+}
+
+func TestReleaseBaseValueIsFixed(t *testing.T) {
+	src, err := os.ReadFile("release.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "//go:build !dev") ||
+		!strings.Contains(string(src), `const ReleaseBase = "https://github.com/smrit-ai/cli/releases/latest/download"`) {
+		t.Error("release ReleaseBase must be the constant GitHub latest download address behind !dev")
+	}
+	dev, err := os.ReadFile("release_dev.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dev), "//go:build dev") || !strings.Contains(string(dev), "var ReleaseBase = ") {
+		t.Error("release_dev.go must carry the dev build tag and a ReleaseBase variable for ldflags")
+	}
 }
