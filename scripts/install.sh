@@ -104,7 +104,12 @@ fetch() {
 			curl -fsSL --proto '=https' --tlsv1.2 -o "$2" "$1"
 		fi
 	elif command -v wget >/dev/null 2>&1; then
-		wget -q -O "$2" "$1"
+		# BusyBox wget has no --https-only, so it is passed only when wget lists it.
+		if [ -z "${SMRIT_INSTALL_BASE_URL:-}" ] && wget --help 2>&1 | grep -q -- '--https-only'; then
+			wget -q --https-only -O "$2" "$1"
+		else
+			wget -q -O "$2" "$1"
+		fi
 	else
 		fail "Neither curl nor wget is installed, so smrit cannot be downloaded."
 	fi

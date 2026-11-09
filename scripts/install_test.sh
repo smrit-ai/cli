@@ -88,6 +88,62 @@ expect_refused dup "$work/home4" "SHA256SUMS"
 # A failed download (404).
 mkdir -p "$work/home5"; expect_refused nonexistent "$work/home5" "download"
 
+# The wget fallback. PATH holds the tools the installer needs and a fake wget
+# but no curl. The fake records its arguments and copies the file from the
+# good release, so nothing reaches the network; FAKE_WGET_HELP is what its
+# --help prints (BusyBox wget has no --https-only).
+mkdir -p "$work/nocurl"
+for tool in uname mktemp rm awk wc tr sha256sum shasum tar mkdir cp chmod mv grep cat basename; do
+	p="$(command -v "$tool" 2>/dev/null)" || continue
+	ln -s "$p" "$work/nocurl/$tool"
+done
+cat >"$work/nocurl/wget" <<'FAKE'
+#!/bin/sh
+case "$1" in --help) printf '%s\n' "$FAKE_WGET_HELP" >&2; exit 1 ;; esac
+printf '%s\n' "$*" >>"$FAKE_WGET_LOG"
+out=""; url=""
+while [ $# -gt 0 ]; do
+	case "$1" in -O) out="$2"; shift ;; -*) ;; *) url="$1" ;; esac
+	shift
+done
+cp "$FAKE_WGET_FROM/$(basename "$url")" "$out"
+FAKE
+chmod 755 "$work/nocurl/wget"
+
+wget_install() {
+	# $1 = home, $2 = what wget --help prints, $3 = SMRIT_INSTALL_BASE_URL or empty
+	: >"$1.log"
+	if [ -n "$3" ]; then
+		PATH="$work/nocurl" HOME="$1" SMRIT_INSTALL_DIR="$1/bin" SMRIT_INSTALL_BASE_URL="$3" \
+			FAKE_WGET_HELP="$2" FAKE_WGET_LOG="$1.log" FAKE_WGET_FROM="$work/good" /bin/sh "$here/install.sh"
+	else
+		PATH="$work/nocurl" HOME="$1" SMRIT_INSTALL_DIR="$1/bin" \
+			FAKE_WGET_HELP="$2" FAKE_WGET_LOG="$1.log" FAKE_WGET_FROM="$work/good" /bin/sh "$here/install.sh"
+	fi
+}
+
+gnu_help="  --https-only                     only follow secure HTTPS links"
+busybox_help="Usage: wget [-cqS] [-O FILE] URL"
+
+# A wget that knows --https-only gets it on both downloads.
+mkdir -p "$work/home6"
+out="$(wget_install "$work/home6" "$gnu_help" "" 2>&1)" || fail "wget install failed: $out"
+[ -x "$work/home6/bin/smrit" ] || fail "wget install left no binary"
+[ "$(grep -c -- '--https-only' "$work/home6.log")" = 2 ] || fail "wget was not given --https-only: $(cat "$work/home6.log")"
+
+# BusyBox wget does not know it, so it is not passed.
+mkdir -p "$work/home7"
+out="$(wget_install "$work/home7" "$busybox_help" "" 2>&1)" || fail "BusyBox wget install failed: $out"
+[ -x "$work/home7/bin/smrit" ] || fail "BusyBox wget install left no binary"
+[ "$(wc -l <"$work/home7.log" | tr -d ' ')" = 2 ] || fail "wget did not download twice: $(cat "$work/home7.log")"
+! grep -q -- '--https-only' "$work/home7.log" || fail "BusyBox wget was given --https-only"
+
+# With the base URL overridden for tests, the https only rule is off for wget too.
+mkdir -p "$work/home8"
+out="$(wget_install "$work/home8" "$gnu_help" "http://127.0.0.1:$port/good" 2>&1)" || fail "wget install with a base URL failed: $out"
+[ "$(wc -l <"$work/home8.log" | tr -d ' ')" = 2 ] || fail "wget did not download twice: $(cat "$work/home8.log")"
+! grep -q -- '--https-only' "$work/home8.log" || fail "wget was given --https-only with the base URL overridden"
+
 # A hostile VERSION is refused before anything runs.
 marker="$work/pwned"
 if (cd "$here/.." && make release VERSION="1.0.0\"\$(touch $marker)\"" >/dev/null 2>&1); then fail "hostile VERSION accepted"; fi
