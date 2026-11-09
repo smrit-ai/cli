@@ -183,7 +183,7 @@ func (rm *remover) placeholder(rel string) (string, error) {
 		if _, err := rand.Read(b); err != nil {
 			return "", err
 		}
-		name := ".smrit-retire-" + hex.EncodeToString(b) + ".tmp"
+		name := scan.RetireTempPrefix + hex.EncodeToString(b) + scan.RetireTempSuffix
 		if dir != "." {
 			name = dir + "/" + name
 		}

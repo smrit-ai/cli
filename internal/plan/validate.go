@@ -53,6 +53,10 @@ func Validate(ctx context.Context, p Plan, res scan.Result, spaces []Space, obje
 	for _, s := range res.Skipped {
 		skipped[s.Path] = s.Reason
 	}
+	leftover := map[string]bool{}
+	for _, l := range res.Leftovers {
+		leftover[l.Path] = true
+	}
 	bySlug := map[string]int{}
 	byPath := map[string]int{}
 	for _, e := range p.Entries {
@@ -86,6 +90,8 @@ func Validate(ctx context.Context, p Plan, res scan.Result, spaces []Space, obje
 		if !found {
 			if skipped[pe.Path] == scan.SkipSymlink {
 				refuse("This file is a symlink, and smrit never follows one.")
+			} else if leftover[pe.Path] {
+				refuse("This file holds a file smrit retire was moving aside, so it is never imported.")
 			} else if res.Truncated {
 				refuse("The folder has more than %d files and smrit reads only the first %d, so this file was cut off. Plan a smaller folder.", scan.DefaultMaxFiles, scan.DefaultMaxFiles)
 			} else {

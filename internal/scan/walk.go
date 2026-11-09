@@ -180,7 +180,7 @@ func (g *homeGuard) holds(dir string, info os.FileInfo) bool {
 // identity, which catches any alias the root checks miss (a mount point, a
 // firmlink); nothing has been read by then, since files are read after the
 // walk.
-func walk(ctx context.Context, root string, limit int, files *[]walked, skipped *[]Skipped, guard *homeGuard) (truncated bool, err error) {
+func walk(ctx context.Context, root string, limit int, files *[]walked, skipped *[]Skipped, leftovers *[]Leftover, guard *homeGuard) (truncated bool, err error) {
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, werr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -224,6 +224,10 @@ func walk(ctx context.Context, root string, limit int, files *[]walked, skipped 
 			return nil
 		case !t.IsRegular():
 			*skipped = append(*skipped, Skipped{Root: root, Path: rel, Reason: SkipNotRegular})
+			return nil
+		case IsRetireTemp(name):
+			// Never read and never a file: a leftover is listed, not imported.
+			*leftovers = append(*leftovers, Leftover{Root: root, Path: rel, Folder: filepath.Dir(p), Note: LeftoverNote})
 			return nil
 		}
 		if len(*files) >= limit {

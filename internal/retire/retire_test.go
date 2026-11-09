@@ -1333,3 +1333,35 @@ func TestFolderSwappedMidRunIsNotTouched(t *testing.T) {
 	}
 	assertNoTemporaries(t, moved)
 }
+
+// A file an earlier retire moved aside and never finished with is listed in
+// the preview and after apply, and is never zipped, deleted or changed.
+func TestLeftoversListedNeverTouched(t *testing.T) {
+	isolate(t)
+	root := realPath(t, t.TempDir())
+	f := newFixture(t, root)
+	f.done("a.md", "as imported\n")
+	const name = ".smrit-retire-0123456789abcdef.tmp"
+	write(t, root, name, "moved aside\n")
+	f.imported(name, "moved aside\n", state.StatusCreated, "DocLeftoverAAAAAAAAAA")
+	for _, apply := range []bool{false, true} {
+		rep := f.mustRetire(apply)
+		if len(rep.Leftovers) != 1 || rep.Leftovers[0].Path != name || rep.Leftovers[0].Folder != root || rep.Leftovers[0].Note == "" {
+			t.Fatalf("apply %v: leftovers %+v", apply, rep.Leftovers)
+		}
+		if slices.Contains(rep.Zipped, name) || slices.Contains(rep.Deleted, name) {
+			t.Fatalf("apply %v: report %+v", apply, rep)
+		}
+		if content(t, filepath.Join(root, name)) != "moved aside\n" {
+			t.Fatalf("apply %v: the leftover changed", apply)
+		}
+		if apply {
+			if !slices.Equal(rep.Zipped, []string{"a.md"}) {
+				t.Fatalf("report %+v", rep)
+			}
+			if _, in := zipMembers(t, *rep.Zip)[name]; in {
+				t.Fatal("the leftover went into the zip")
+			}
+		}
+	}
+}

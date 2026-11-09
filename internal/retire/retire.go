@@ -75,6 +75,9 @@ type Report struct {
 	// Zipped are files copied into the zip and then removed.
 	Zipped []string `json:"zipped"`
 	Left   []Left   `json:"left"`
+	// Leftovers are files an earlier retire moved aside and never finished
+	// with. Retire lists them and never touches them.
+	Leftovers []scan.Leftover `json:"leftovers"`
 	// RecoverableUnpushed are deleted files whose last commit is not on an
 	// upstream, or that have none: recoverable from local commits only.
 	RecoverableUnpushed []string `json:"recoverable_unpushed"`
@@ -132,7 +135,7 @@ type item struct {
 
 // Run retires run id. Without o.Apply it only reads.
 func Run(ctx context.Context, id string, o Options) (Report, error) {
-	rep := Report{Run: id, Deleted: []string{}, Zipped: []string{}, Left: []Left{}, RecoverableUnpushed: []string{}}
+	rep := Report{Run: id, Deleted: []string{}, Zipped: []string{}, Left: []Left{}, Leftovers: []scan.Leftover{}, RecoverableUnpushed: []string{}}
 	missing := &RefusedError{"No import run has that id. The id is printed when a run begins."}
 	p := ""
 	if o.StateDir != "" {
@@ -172,6 +175,7 @@ func Run(ctx context.Context, id string, o Options) (Report, error) {
 	}
 	rootPath := res.Roots[0].Path
 	rep.Root = rootPath
+	rep.Leftovers = res.Leftovers
 
 	zipItems, delItems := classify(run, res, &rep)
 

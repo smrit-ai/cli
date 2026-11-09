@@ -64,7 +64,7 @@ func TestRetireReportsThenApplies(t *testing.T) {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
-	want := []string{"applied", "deleted", "exclude_added", "left", "recoverable_unpushed", "root", "run", "zip", "zipped"}
+	want := []string{"applied", "deleted", "exclude_added", "left", "leftovers", "recoverable_unpushed", "root", "run", "zip", "zipped"}
 	if !slices.Equal(keys, want) {
 		t.Errorf("keys %v, want %v", keys, want)
 	}
@@ -152,5 +152,29 @@ func TestRetireStoppedExits1WithTheReport(t *testing.T) {
 	}
 	if err := json.Unmarshal([]byte(out), &rep); err != nil || rep.Zip == nil || len(rep.Left) != 1 || rep.Left[0].Path != "ro/a.md" {
 		t.Errorf("report: %v %s", err, out)
+	}
+}
+
+// A leftover from an earlier retire shows in scan's and retire's text, with
+// its sentence, and is left in place.
+func TestLeftoversInTextOutput(t *testing.T) {
+	root := retireSetup(t, state.PhaseFinished)
+	const name = ".smrit-retire-0123456789abcdef.tmp"
+	if err := os.WriteFile(filepath.Join(root, name), []byte("moved aside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errs := runCmd(t, nil, "--json=false", "scan", root)
+	if code != ExitOK || !strings.Contains(out, "Leftover "+name+": ") || !strings.Contains(out, "retire was moving") {
+		t.Fatalf("scan exit %d: %q %q", code, out, errs)
+	}
+	code, out, errs = runCmd(t, nil, "--json=false", "retire", retireRunID, "--apply")
+	if code != ExitOK || !strings.Contains(out, "Leftover "+name+": ") {
+		t.Fatalf("retire exit %d: %q %q", code, out, errs)
+	}
+	if strings.ContainsAny(out, "—–") || strings.Contains(out, " - ") {
+		t.Errorf("text: %q", out)
+	}
+	if b, err := os.ReadFile(filepath.Join(root, name)); err != nil || string(b) != "moved aside\n" {
+		t.Fatalf("the leftover changed: %q %v", b, err)
 	}
 }

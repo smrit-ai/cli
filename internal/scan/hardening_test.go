@@ -373,7 +373,8 @@ func TestWalkRefusesTheHomeFolder(t *testing.T) {
 	}
 	var files []walked
 	var skipped []Skipped
-	_, err = walk(context.Background(), root, 100, &files, &skipped, g)
+	var leftovers []Leftover
+	_, err = walk(context.Background(), root, 100, &files, &skipped, &leftovers, g)
 	var re *RefusedError
 	if !errors.As(err, &re) {
 		t.Fatalf("want a refusal, got %v", err)

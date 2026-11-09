@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 )
 
@@ -77,10 +78,11 @@ type Root struct {
 
 // Result is everything a scan found.
 type Result struct {
-	Roots     []Root    `json:"roots"`
-	Files     []File    `json:"files"`
-	Skipped   []Skipped `json:"skipped"`
-	Truncated bool      `json:"truncated"`
+	Roots     []Root     `json:"roots"`
+	Files     []File     `json:"files"`
+	Skipped   []Skipped  `json:"skipped"`
+	Leftovers []Leftover `json:"leftovers"`
+	Truncated bool       `json:"truncated"`
 	// Notes are sentences about the scan as a whole, such as git missing.
 	Notes []string `json:"notes"`
 }
@@ -144,6 +146,36 @@ type Skipped struct {
 	Reason string `json:"reason"`
 }
 
+// RetireTempPrefix and RetireTempSuffix frame the name retire gives a file
+// it moves aside before removing it.
+const (
+	RetireTempPrefix = ".smrit-retire-"
+	RetireTempSuffix = ".tmp"
+)
+
+// LeftoverNote is what a leftover says to a person.
+const LeftoverNote = "This file holds a file smrit retire was moving aside when it stopped, so look inside and give it back its name or delete it yourself."
+
+// Leftover is a file retire moved aside and never finished with, left by a
+// crash between the move and the unlink. It holds a person's file under a
+// temporary name, so it is never listed as a file: nothing imports, zips or
+// deletes it.
+type Leftover struct {
+	Root string `json:"root"`
+	// Path is relative to Root, with forward slashes; Folder is the real
+	// path of the folder holding it.
+	Path   string `json:"path"`
+	Folder string `json:"folder"`
+	Note   string `json:"note"`
+}
+
+// IsRetireTemp reports whether name is a name retire gives a file it moves
+// aside.
+func IsRetireTemp(name string) bool {
+	return len(name) > len(RetireTempPrefix)+len(RetireTempSuffix) &&
+		strings.HasPrefix(name, RetireTempPrefix) && strings.HasSuffix(name, RetireTempSuffix)
+}
+
 // RefusedError is a root the scan will not read at all. Its message is one
 // sentence for a person.
 type RefusedError struct{ Msg string }
@@ -168,7 +200,7 @@ func CheckRoots(roots []string, opts Options) error {
 // Run scans the roots and returns what it found. It reads every file but
 // reports only facts about it, never its body.
 func Run(ctx context.Context, roots []string, opts Options) (Result, error) {
-	res := Result{Roots: []Root{}, Files: []File{}, Skipped: []Skipped{}, Notes: []string{}}
+	res := Result{Roots: []Root{}, Files: []File{}, Skipped: []Skipped{}, Leftovers: []Leftover{}, Notes: []string{}}
 	real, guard, err := resolveRoots(roots, opts.Home)
 	if err != nil {
 		return res, err
@@ -183,7 +215,7 @@ func Run(ctx context.Context, roots []string, opts Options) (Result, error) {
 		if res.Truncated {
 			continue
 		}
-		t, err := walk(ctx, r, limit, &found, &res.Skipped, guard)
+		t, err := walk(ctx, r, limit, &found, &res.Skipped, &res.Leftovers, guard)
 		if err != nil {
 			return res, err
 		}

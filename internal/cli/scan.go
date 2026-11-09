@@ -39,6 +39,7 @@ func (o scanOutput) String() string {
 	for _, s := range o.Skipped {
 		fmt.Fprintf(&b, "Skipped %s: %s\n", printable(s.Path), s.Reason)
 	}
+	writeLeftovers(&b, o.Leftovers, len(o.Roots) > 1)
 	if o.Truncated {
 		fmt.Fprintf(&b, "Stopped at %d files; scan a smaller folder to see the rest.\n", len(o.Files))
 	}
@@ -46,6 +47,18 @@ func (o scanOutput) String() string {
 		b.WriteString(printable(n) + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// writeLeftovers writes one line for each file retire moved aside and never
+// finished with, with its sentence.
+func writeLeftovers(b *strings.Builder, leftovers []scan.Leftover, withRoot bool) {
+	for _, l := range leftovers {
+		name := l.Path
+		if withRoot {
+			name = path.Join(l.Root, l.Path)
+		}
+		fmt.Fprintf(b, "Leftover %s: %s\n", printable(name), l.Note)
+	}
 }
 
 // printable shows s as it is, or quoted with Go escapes when it holds a

@@ -40,6 +40,7 @@ func (o retireOutput) String() string {
 	for _, l := range o.Left {
 		fmt.Fprintf(&b, "Left %s: %s\n", printable(l.Path), l.Reason)
 	}
+	writeLeftovers(&b, o.Leftovers, false)
 	if !o.Applied {
 		fmt.Fprintf(&b, "Nothing was changed. To do this, run smrit retire %s --apply", o.Run)
 	}

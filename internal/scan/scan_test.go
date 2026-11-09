@@ -2,6 +2,7 @@ package scan
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -630,5 +631,50 @@ func TestUsedCountsPathsInsideLongerMatches(t *testing.T) {
 		if got := hasFlag(file(t, res, p), "used"); got != want {
 			t.Errorf("%s used = %v, want %v", p, got, want)
 		}
+	}
+}
+
+// A file retire moved aside and never finished with is listed as a
+// leftover, with its folder and a sentence, and never as a file to import.
+func TestRetireLeftoversAreListedNotFiles(t *testing.T) {
+	isolate(t)
+	root := real(t, t.TempDir())
+	write(t, root, "a.md", "# A\n")
+	write(t, root, "sub/.smrit-retire-0123456789abcdef.tmp", "# Moved\n")
+	write(t, root, ".smrit-retire-fedcba9876543210.tmp", "x")
+	res := scanOK(t, Options{}, root)
+	if !slices.Equal(paths(res), []string{"a.md"}) {
+		t.Fatalf("files %v", paths(res))
+	}
+	if len(res.Leftovers) != 2 {
+		t.Fatalf("leftovers %+v", res.Leftovers)
+	}
+	byPath := map[string]Leftover{}
+	for _, l := range res.Leftovers {
+		byPath[l.Path] = l
+	}
+	l, ok := byPath["sub/.smrit-retire-0123456789abcdef.tmp"]
+	if !ok || l.Root != root || l.Folder != filepath.Join(root, "sub") {
+		t.Fatalf("leftover %+v", res.Leftovers)
+	}
+	if top := byPath[".smrit-retire-fedcba9876543210.tmp"]; top.Folder != root {
+		t.Fatalf("leftover %+v", top)
+	}
+	if !strings.Contains(l.Note, "retire") || strings.ContainsAny(l.Note, "—–") || strings.Contains(l.Note, " - ") {
+		t.Fatalf("note %q", l.Note)
+	}
+	if len(scanOK(t, Options{}, real(t, t.TempDir())).Leftovers) != 0 {
+		t.Fatal("leftovers in an empty folder")
+	}
+}
+
+// The result always carries the leftovers field, as a list.
+func TestLeftoversFieldIsAList(t *testing.T) {
+	isolate(t)
+	root := real(t, t.TempDir())
+	write(t, root, "a.md", "# A\n")
+	b, err := json.Marshal(scanOK(t, Options{}, root))
+	if err != nil || !strings.Contains(string(b), `"leftovers":[]`) {
+		t.Fatalf("%s %v", b, err)
 	}
 }

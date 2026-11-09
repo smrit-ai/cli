@@ -75,7 +75,8 @@ func TestPlanRefusals(t *testing.T) {
 			file("dup-a.md", "document"),
 			file("bin.md", "document", scan.FlagNotUTF8),
 		},
-		Skipped: []scan.Skipped{{Path: "link.md", Reason: scan.SkipSymlink}},
+		Skipped:   []scan.Skipped{{Path: "link.md", Reason: scan.SkipSymlink}},
+		Leftovers: []scan.Leftover{{Path: "sub/.smrit-retire-0123456789abcdef.tmp"}},
 	}
 	res.Files[6].Size = scan.MaxDocumentBytes + 1
 	doc := func(p, space string) PlanEntry {
@@ -92,6 +93,7 @@ func TestPlanRefusals(t *testing.T) {
 		{"absolute path", doc("/etc/passwd", "engineering"), true, "outside"},
 		{"missing", doc("nope.md", "engineering"), true, "not in the folder"},
 		{"symlink", doc("link.md", "engineering"), true, "symlink"},
+		{"retire leftover", PlanEntry{Path: "sub/.smrit-retire-0123456789abcdef.tmp", Kind: "object", Scope: "organization"}, true, "retire was moving"},
 		{"secret", doc("secret.md", "engineering"), true, "secret"},
 		{"sensitive name", doc(".env.md", "engineering"), true, "sensitive"},
 		{"kind the file does not allow", PlanEntry{Path: "run.py", Kind: "document", Space: "engineering", Type: "x"}, true, "cannot be made"},
