@@ -93,7 +93,7 @@ mkdir -p "$work/home5"; expect_refused nonexistent "$work/home5" "download"
 # good release, so nothing reaches the network; FAKE_WGET_HELP is what its
 # --help prints (BusyBox wget has no --https-only).
 mkdir -p "$work/nocurl"
-for tool in uname mktemp rm awk wc tr sha256sum shasum tar mkdir cp chmod mv grep cat basename; do
+for tool in uname mktemp rm awk wc tr sha256sum shasum tar gzip mkdir cp chmod mv grep cat basename; do
 	p="$(command -v "$tool" 2>/dev/null)" || continue
 	ln -s "$p" "$work/nocurl/$tool"
 done
