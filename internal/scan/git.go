@@ -50,13 +50,17 @@ func newGit(bin string) *gitRunner {
 // run calls git in dir and returns its standard output and exit code. The
 // config overrides keep a repository's own settings from changing the
 // output's shape; core.fsmonitor and log.showSignature off mean git starts
-// no fsmonitor hook and no gpg.program. Filters and the rest are handled by
-// refusing the repository first (see namesPrograms).
+// no fsmonitor hook and no gpg.program, and submodule.recurse off (with
+// status's --ignore-submodules=all) keeps every command out of submodules,
+// whose own config the parent's check never read. A submodule is checked
+// and read as a repository of its own. Filters and the rest are handled by
+// refusing a repository before anything else runs in it (namesPrograms).
 func (g *gitRunner) run(ctx context.Context, dir string, args ...string) ([]byte, int, error) {
 	full := append([]string{
 		"-C", dir,
 		"-c", "core.fsmonitor=false",
 		"-c", "log.showSignature=false",
+		"-c", "submodule.recurse=false",
 		"-c", "core.quotepath=off",
 		"-c", "color.ui=never",
 		"-c", "color.grep=never",
@@ -133,7 +137,6 @@ type repoInfo struct {
 	unpushed  map[string]bool // paths touched by commits not on the upstream
 	scope     []string        // pathspecs limiting status and ls-files, empty for all
 	statusErr bool
-	programs  bool // the repository's config names programs; nothing else was run
 }
 
 // loadRepo reads the repository's state. scope limits it to the scanned
@@ -141,12 +144,7 @@ type repoInfo struct {
 func (g *gitRunner) loadRepo(ctx context.Context, top string, scope []string) *repoInfo {
 	ri := &repoInfo{top: top, tracked: map[string]bool{}, changed: map[string]string{}, ignored: map[string]bool{}, unpushed: map[string]bool{}, scope: scope}
 	spec := pathspecs(scope)
-	if g.namesPrograms(ctx, top) {
-		ri.programs = true
-		return ri
-	}
-
-	out, code, err := g.run(ctx, top, append([]string{"status", "--porcelain=v1", "-z", "--ignored", "--untracked-files=all"}, spec...)...)
+	out, code, err := g.run(ctx, top, append([]string{"status", "--porcelain=v1", "-z", "--ignored", "--untracked-files=all", "--ignore-submodules=all"}, spec...)...)
 	if err != nil || code != 0 {
 		ri.statusErr = true
 		return ri

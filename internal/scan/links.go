@@ -86,7 +86,7 @@ type linkScanner struct {
 	codeEnd map[int]int
 	// closeOf maps a [ to its matching ].
 	closeOf map[int]int
-	// at lists the positions of each byte a title can end with.
+	// at lists the positions of each byte that can end or cut a title.
 	at   map[byte][]int
 	work int
 }
@@ -265,8 +265,17 @@ func (s *linkScanner) link(open, to int) (rawLink, int, bool) {
 		if closer == '(' {
 			closer = ')'
 		}
+		// A title ends on its own line and before the next [. Without that,
+		// every link start in a long line would reach for the same far
+		// closer and skip the same run after it again.
 		end := s.nextAt(closer, i+1)
 		if end < 0 || end >= to {
+			return rawLink{}, 0, false
+		}
+		if nl := s.nextAt('\n', i+1); nl >= 0 && nl < end {
+			return rawLink{}, 0, false
+		}
+		if br := s.nextAt('[', i+1); br >= 0 && br < end {
 			return rawLink{}, 0, false
 		}
 		i = s.skipSpace(end+1, to)
@@ -340,7 +349,7 @@ func parseLinksCounting(body, rel string) ([]Link, int) {
 	s := &linkScanner{body: body, codeEnd: map[int]int{}, closeOf: map[int]int{}, at: map[byte][]int{}}
 	for i := 0; i < len(body); i++ {
 		s.work++
-		if c := body[i]; c == '"' || c == '\'' || c == ')' {
+		if c := body[i]; c == '"' || c == '\'' || c == ')' || c == '\n' || c == '[' {
 			s.at[c] = append(s.at[c], i)
 		}
 	}

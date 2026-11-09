@@ -149,7 +149,7 @@ func usage(format string, a ...any) error   { return &UsageError{fmt.Sprintf(for
 // reports only facts about it, never its body.
 func Run(ctx context.Context, roots []string, opts Options) (Result, error) {
 	res := Result{Roots: []Root{}, Files: []File{}, Skipped: []Skipped{}, Notes: []string{}}
-	real, err := resolveRoots(roots, opts.Home)
+	real, guard, err := resolveRoots(roots, opts.Home)
 	if err != nil {
 		return res, err
 	}
@@ -163,7 +163,7 @@ func Run(ctx context.Context, roots []string, opts Options) (Result, error) {
 		if res.Truncated {
 			continue
 		}
-		t, err := walk(ctx, r, limit, &found, &res.Skipped)
+		t, err := walk(ctx, r, limit, &found, &res.Skipped, guard)
 		if err != nil {
 			return res, err
 		}
@@ -174,7 +174,10 @@ func Run(ctx context.Context, roots []string, opts Options) (Result, error) {
 	if g == nil {
 		res.Notes = append(res.Notes, noGitNote)
 	}
-	tops := repoTops(ctx, g, found)
+	tops, flagged := repoTops(ctx, g, found)
+	for _, dir := range flagged {
+		res.Notes = append(res.Notes, fmt.Sprintf("The repository holding %s names programs in its own git config, so smrit scan ran no git command there and lists its files as outside.", dir))
+	}
 
 	// One status and one ls-files per repository. A repository found at or
 	// inside a root is read whole; one above a root only under the roots, so
@@ -212,10 +215,6 @@ func Run(ctx context.Context, roots []string, opts Options) (Result, error) {
 			scope = nil
 		}
 		ri := g.loadRepo(ctx, top, scope)
-		if ri.programs {
-			res.Notes = append(res.Notes, fmt.Sprintf("The repository at %s names programs in its own git config, so smrit scan ran no git command there and lists its files as outside.", top))
-			continue
-		}
 		if ri.statusErr {
 			res.Notes = append(res.Notes, fmt.Sprintf("git could not read the repository at %s, so its files are listed as outside.", top))
 			continue
@@ -283,12 +282,18 @@ func Run(ctx context.Context, roots []string, opts Options) (Result, error) {
 }
 
 // repoTops finds the repository of each walked file: git's answer for each
-// root, and for a folder below a root holding its own .git, git's answer
-// there. Other folders inherit their parent's. "" is outside.
-func repoTops(ctx context.Context, g *gitRunner, found []walked) []string {
-	tops := make([]string, len(found))
+// root, and for a folder below a root holding its own .git (a nested
+// repository or a submodule), git's answer there. Other folders inherit
+// their parent's. "" is outside.
+//
+// Before git is asked anything else about a folder, its repository's own
+// config is read (namesPrograms, which runs nothing). A folder whose
+// repository names programs is outside, with everything under it, and is
+// returned in flagged; no other git command ever runs there.
+func repoTops(ctx context.Context, g *gitRunner, found []walked) (tops, flagged []string) {
+	tops = make([]string, len(found))
 	if g == nil {
-		return tops
+		return tops, nil
 	}
 	memo := map[string]string{}
 	var of func(dir, root string) string
@@ -297,12 +302,14 @@ func repoTops(ctx context.Context, g *gitRunner, found []walked) []string {
 			return t
 		}
 		var t string
-		if dir == root {
-			t = g.toplevel(ctx, dir)
-		} else if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
-			t = g.toplevel(ctx, dir)
-		} else {
+		_, err := os.Lstat(filepath.Join(dir, ".git"))
+		switch {
+		case dir != root && err != nil:
 			t = of(filepath.Dir(dir), root)
+		case g.namesPrograms(ctx, dir):
+			flagged = append(flagged, dir)
+		default:
+			t = g.toplevel(ctx, dir)
 		}
 		memo[dir] = t
 		return t
@@ -310,7 +317,7 @@ func repoTops(ctx context.Context, g *gitRunner, found []walked) []string {
 	for i, w := range found {
 		tops[i] = of(filepath.Dir(w.abs), w.root)
 	}
-	return tops
+	return tops, flagged
 }
 
 // markUsed sets the used flag, one git grep per repository.

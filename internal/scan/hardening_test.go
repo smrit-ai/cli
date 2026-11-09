@@ -230,12 +230,18 @@ func TestGlobalFilterConfigIsTheUsers(t *testing.T) {
 // quadratic. No time is measured.
 func TestLinkWorkIsLinear(t *testing.T) {
 	inputs := map[string]func(n int) string{
-		"empty fences":      func(n int) string { return strings.Repeat("```\n```\n", n/8) },
-		"open brackets":     func(n int) string { return strings.Repeat("[", n) },
-		"open images":       func(n int) string { return strings.Repeat("![", n/2) },
-		"backtick runs":     func(n int) string { return strings.Repeat("a `` b ` ", n/9) },
-		"unclosed parens":   func(n int) string { return strings.Repeat("[](", n/3) },
-		"unclosed titles":   func(n int) string { return strings.Repeat("[](a (", n/6) },
+		"empty fences":    func(n int) string { return strings.Repeat("```\n```\n", n/8) },
+		"open brackets":   func(n int) string { return strings.Repeat("[", n) },
+		"open images":     func(n int) string { return strings.Repeat("![", n/2) },
+		"backtick runs":   func(n int) string { return strings.Repeat("a `` b ` ", n/9) },
+		"unclosed parens": func(n int) string { return strings.Repeat("[](", n/3) },
+		"unclosed titles": func(n int) string { return strings.Repeat("[](a (", n/6) },
+		"titles sharing a closer": func(n int) string {
+			return strings.Repeat("[](a (", n/12) + ")" + strings.Repeat(" ", n/2) + "x"
+		},
+		"destinations sharing spaces": func(n int) string {
+			return strings.Repeat("[](a", n/8) + strings.Repeat(" ", n/2) + "(x"
+		},
 		"long destinations": func(n int) string { return strings.Repeat("[]("+strings.Repeat("a", 97), n/100) },
 		"nested links":      func(n int) string { return strings.Repeat("[", n/8) + strings.Repeat("x](a) ", n/8) },
 		"links in a fence":  func(n int) string { return "```\n" + strings.Repeat("[a](b) ", n/7) },
@@ -325,5 +331,100 @@ func TestFIFOIsSkippedNotRegular(t *testing.T) {
 func TestCopilotInstructionsKeepRule(t *testing.T) {
 	if !keepFile("/w/repo/.github/copilot-instructions.md") || keepFile("/w/repo/docs/copilot-instructions.md") {
 		t.Fatal(".github/copilot-instructions.md is keep, elsewhere it is not")
+	}
+}
+
+// A volume root holding the home folder under another name, as
+// /System/Volumes/Data holds /Users on macOS, is refused, and so is a
+// folder above it. The file limit bounds the old behaviour, which walked it.
+func TestRefusesVolumeHoldingHome(t *testing.T) {
+	isolate(t)
+	home := real(t, t.TempDir())
+	tried := 0
+	for _, root := range []string{"/System/Volumes/Data", "/System/Volumes"} {
+		if _, err := os.Stat(filepath.Join("/System/Volumes/Data", home)); err != nil {
+			continue
+		}
+		tried++
+		_, err := Run(context.Background(), []string{root}, Options{Home: home, MaxFiles: 1})
+		var re *RefusedError
+		if !errors.As(err, &re) {
+			t.Errorf("%s holds the home folder under another name: want a refusal, got %v", root, err)
+		}
+	}
+	if tried == 0 {
+		t.Skip("no Data volume alias here")
+	}
+}
+
+// The walk itself refuses on reaching a folder that is the home folder, by
+// identity, whatever the root checks said. Here the root checks are
+// bypassed by calling walk directly.
+func TestWalkRefusesTheHomeFolder(t *testing.T) {
+	isolate(t)
+	root := real(t, t.TempDir())
+	home := filepath.Join(root, "b", "home")
+	write(t, root, "a.md", "a")
+	write(t, home, "secret.md", "s")
+	write(t, root, "c/after.md", "c")
+	g, err := newHomeGuard(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files []walked
+	var skipped []Skipped
+	_, err = walk(context.Background(), root, 100, &files, &skipped, g)
+	var re *RefusedError
+	if !errors.As(err, &re) {
+		t.Fatalf("want a refusal, got %v", err)
+	}
+	for _, f := range files {
+		if strings.HasPrefix(f.rel, "b/home/") {
+			t.Fatalf("a file under the home folder was listed: %s", f.rel)
+		}
+	}
+}
+
+// HOME inside the root: refused before any file is read.
+func TestRefusesWhenHomeIsInsideRoot(t *testing.T) {
+	isolate(t)
+	root := real(t, t.TempDir())
+	home := filepath.Join(root, "people", "pat")
+	write(t, home, "notes.md", "n")
+	wantRefused(t, "home inside the root", root, home)
+}
+
+// The parent repository is clean, but a submodule's own config names a
+// filter. The parent's status must not recurse into it, and no git command
+// runs in the submodule.
+func TestSubmoduleConfigRunsNothing(t *testing.T) {
+	isolate(t)
+	marker := filepath.Join(t.TempDir(), "RAN")
+	prog := filepath.Join(t.TempDir(), "run.sh")
+	if err := os.WriteFile(prog, []byte("#!/bin/sh\ntouch '"+marker+"'\ncat\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sub := newRepo(t)
+	write(t, sub, ".gitattributes", "*.md filter=x\n")
+	write(t, sub, "a.md", "one\n")
+	commitAll(t, sub, "sub")
+	parent := newRepo(t)
+	write(t, parent, "docs/index.md", "# Index\n")
+	commitAll(t, parent, "parent")
+	gitIn(t, parent, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "docs/sub")
+	gitIn(t, parent, "commit", "-q", "-m", "add sub")
+	inner := filepath.Join(parent, "docs", "sub")
+	gitIn(t, inner, "config", "filter.x.clean", prog)
+	write(t, inner, "a.md", "two\n")
+
+	res := scanOK(t, Options{}, parent)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the submodule's filter ran")
+	}
+	if g := file(t, res, "docs/index.md").Git; g.State != StateClean {
+		t.Errorf("the parent is read as usual: %+v %v", g, res.Notes)
+	}
+	if g := file(t, res, "docs/sub/a.md").Git; g.State != StateOutside {
+		t.Errorf("the submodule names a program, so its files are outside: %+v", g)
 	}
 }
