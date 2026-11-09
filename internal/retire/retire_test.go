@@ -428,6 +428,33 @@ func TestUsedAtRepositoryTopIsLeft(t *testing.T) {
 	}
 }
 
+// The common mkdocs case: the config at the repository top names the page
+// relative to docs/. Retired from the top, the page stays; a page whose
+// name appears nowhere is still removed.
+func TestPageNamedRelativeToDocsFolderIsLeft(t *testing.T) {
+	isolate(t)
+	repo := newRepo(t)
+	f := newFixture(t, repo)
+	f.done("docs/guide.md", "# Guide\n")
+	f.done("docs/unlisted.md", "# Unlisted\n")
+	write(t, repo, "mkdocs.yml", "site_name: Docs\nnav:\n  - Guide: guide.md\n")
+	commitAll(t, repo, "all")
+
+	rep := f.mustRetire(true)
+	if !slices.Equal(rep.Deleted, []string{"docs/unlisted.md"}) || len(rep.Zipped) != 0 {
+		t.Fatalf("report: %+v", rep)
+	}
+	if r := leftReason(rep, "docs/guide.md"); !strings.Contains(r, "names it") {
+		t.Errorf("used: reason %q", r)
+	}
+	if !exists(t, filepath.Join(repo, "docs/guide.md")) {
+		t.Fatal("a page mkdocs.yml names was removed")
+	}
+	if exists(t, filepath.Join(repo, "docs/unlisted.md")) {
+		t.Fatal("a page named nowhere was kept")
+	}
+}
+
 func TestEditedSinceImportIsLeft(t *testing.T) {
 	isolate(t)
 	root := realPath(t, t.TempDir())

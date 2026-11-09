@@ -26,10 +26,12 @@ internal/scan/scan.go password-assignment e95b45d046af76420a9f4f3c27bec13b2e31c1
 internal/scan/scan_test.go aws-access-key-id 070173fe7fa020fc097e599edf33f39aa3aaffab
 internal/scan/scan_test.go aws-access-key-id 11d09599ea1ecd3954989a2297832aa816a3e908
 internal/scan/scan_test.go aws-access-key-id 5d3ce061aa262005afb68ff4d0ccab298c4651c3
+internal/scan/scan_test.go aws-access-key-id 692f662986a8c76f0213d2b56997ff8edf937f7e
 internal/scan/scan_test.go aws-access-key-id d0f46dc30ca77fc0f3468e6ec62e69522d823226
 internal/scan/scan_test.go password-assignment 070173fe7fa020fc097e599edf33f39aa3aaffab
 internal/scan/scan_test.go password-assignment 11d09599ea1ecd3954989a2297832aa816a3e908
 internal/scan/scan_test.go password-assignment 5d3ce061aa262005afb68ff4d0ccab298c4651c3
+internal/scan/scan_test.go password-assignment 692f662986a8c76f0213d2b56997ff8edf937f7e
 internal/scan/scan_test.go password-assignment d0f46dc30ca77fc0f3468e6ec62e69522d823226
 internal/store/keychain_darwin_test.go password-assignment d1f612abe85f5aed5ac5682b746010e7e99537d9
 internal/upgrade/upgrade_test.go url-credentials be81450828aef3fce78ce579d0ba25618727093f

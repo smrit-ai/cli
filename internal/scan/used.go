@@ -26,8 +26,8 @@ type usedFile struct {
 	importable       bool
 }
 
-// findUsed returns the indexes of files whose repository relative or root
-// relative path appears, as a literal string, in a tracked file of the same
+// findUsed returns the indexes of files whose repository relative path, or
+// path relative to the root or to any folder inside it, appears, as a literal string, in a tracked file of the same
 // repository that is not itself a scanned document, workbook or object. A
 // scanned file of any other kind, a config, a script or code, is searched
 // even inside the root: a mkdocs.yml at the repository top still names the
@@ -37,7 +37,7 @@ func (g *gitRunner) findUsed(ctx context.Context, ri *repoInfo, files []usedFile
 	used = map[int]bool{}
 	byPattern := map[string][]int{}
 	for i, f := range files {
-		for _, p := range []string{f.repoRel, f.rootRel} {
+		for _, p := range append([]string{f.repoRel}, rootSuffixes(f.rootRel)...) {
 			if len(p) < minUsedPattern || strings.ContainsAny(p, "\n\r") {
 				continue
 			}
@@ -97,6 +97,21 @@ func (g *gitRunner) findUsed(ctx context.Context, ri *repoInfo, files []usedFile
 		}
 	}
 	return used, true
+}
+
+// rootSuffixes is rel, a path relative to the root, and the same path
+// relative to every folder inside the root that holds it: docs/a/b.md,
+// a/b.md and b.md. Docs tools name a page relative to their docs folder, as
+// mkdocs.yml at the top names docs/guide.md as guide.md. A name shared by
+// two files marks both used, which only keeps a file.
+func rootSuffixes(rel string) []string {
+	out := []string{rel}
+	for i := 0; i < len(rel); i++ {
+		if rel[i] == '/' && i+1 < len(rel) {
+			out = append(out, rel[i+1:])
+		}
+	}
+	return out
 }
 
 // containedPatterns returns every pattern that is a substring of a found

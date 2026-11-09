@@ -437,6 +437,32 @@ func TestUsedAtRepositoryTop(t *testing.T) {
 	}
 }
 
+// Docs tools name a page relative to their docs folder: mkdocs.yml at the
+// repository top, with the default docs_dir, says guide.md for
+// docs/guide.md. A file whose name appears nowhere is still not used.
+func TestUsedRelativeToItsDocsFolder(t *testing.T) {
+	isolate(t)
+	repo := newRepo(t)
+	write(t, repo, "mkdocs.yml", "site_name: Docs\nnav:\n  - Guide: guide.md\n  - Deep: how/setup.md\n")
+	write(t, repo, "docs/guide.md", "# Guide\n")
+	write(t, repo, "docs/how/setup.md", "# Setup\n")
+	write(t, repo, "docs/how/other.md", "# Other\n")
+	write(t, repo, "docs/a.md", "# Short\n")
+	commitAll(t, repo, "init")
+
+	res := scanOK(t, Options{}, repo)
+	for p, want := range map[string]bool{
+		"docs/guide.md":     true, // guide.md, relative to docs
+		"docs/how/setup.md": true, // how/setup.md, relative to docs
+		"docs/how/other.md": false,
+		"docs/a.md":         false, // a.md is too short to search for
+	} {
+		if got := hasFlag(file(t, res, p), "used"); got != want {
+			t.Errorf("%s used = %v, want %v", p, got, want)
+		}
+	}
+}
+
 func TestGitStates(t *testing.T) {
 	isolate(t)
 	upstream := t.TempDir()
