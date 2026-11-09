@@ -1,0 +1,223 @@
+package plan
+
+import (
+	"context"
+	"fmt"
+	"path"
+	"path/filepath"
+	"strings"
+
+	"github.com/smrit-ai/cli/internal/scan"
+)
+
+// Space is one space as MCP spaces lists it.
+type Space struct {
+	ID         string `json:"id"`
+	Slug       string `json:"slug"`
+	Name       string `json:"name"`
+	Visibility string `json:"visibility"`
+}
+
+// Entry is a plan entry that passed every check, with what the scan found
+// and the defaults filled in.
+type Entry struct {
+	Index int // position in the plan
+	PlanEntry
+	// Space is the space's slug, as resolved.
+	Space string
+	// Abs is the file's absolute path; Size and SHA256 are the rescan's.
+	Abs    string
+	Size   int64
+	SHA256 string
+}
+
+// Refusal is a plan entry that cannot be imported, with one sentence.
+type Refusal struct {
+	Index  int
+	Path   string
+	Kind   string
+	Space  string
+	Reason string
+}
+
+// Validate checks every entry against res, a scan of the plan's root made
+// now, never an earlier one. Nothing here is overridable. Entries and
+// refusals come back in plan order within each list.
+func Validate(ctx context.Context, p Plan, res scan.Result, spaces []Space, objectsAvailable bool) ([]Entry, []Refusal) {
+	files := map[string]scan.File{}
+	skipped := map[string]string{}
+	for _, f := range res.Files {
+		files[f.Path] = f
+	}
+	for _, s := range res.Skipped {
+		skipped[s.Path] = s.Reason
+	}
+	bySlug := map[string]int{}
+	byPath := map[string]int{}
+	for _, e := range p.Entries {
+		byPath[e.Path]++
+		if e.Kind == scan.KindDocument {
+			if s := effectiveSlug(e); s != "" {
+				bySlug[s]++
+			}
+		}
+	}
+
+	var ok []Entry
+	var bad []Refusal
+	for i, pe := range p.Entries {
+		if ctx.Err() != nil {
+			break
+		}
+		refuse := func(format string, a ...any) {
+			bad = append(bad, Refusal{Index: i, Path: pe.Path, Kind: pe.Kind, Space: pe.Space, Reason: fmt.Sprintf(format, a...)})
+		}
+		e := Entry{Index: i, PlanEntry: pe}
+		if reason := pathProblem(pe.Path); reason != "" {
+			refuse("%s", reason)
+			continue
+		}
+		if byPath[pe.Path] > 1 {
+			refuse("The plan lists this path more than once.")
+			continue
+		}
+		f, found := files[pe.Path]
+		if !found {
+			if skipped[pe.Path] == scan.SkipSymlink {
+				refuse("This file is a symlink, and smrit never follows one.")
+			} else {
+				refuse("This file is not in the folder the plan names, or it cannot be read.")
+			}
+			continue
+		}
+		if has(f.Flags, scan.FlagSecret) {
+			refuse("This file now looks like it holds a secret, so it is never imported.")
+			continue
+		}
+		if has(f.Flags, scan.FlagSensitiveName) {
+			refuse("This file's name marks it as sensitive, so it is never imported.")
+			continue
+		}
+		e.Abs = filepath.Join(f.Root, filepath.FromSlash(f.Path))
+		e.Size, e.SHA256 = f.Size, f.SHA256
+
+		switch pe.Kind {
+		case scan.KindDocument, scan.KindWorkbook:
+			if f.Kind != pe.Kind {
+				refuse("A %s cannot be made from this kind of file.", pe.Kind)
+				continue
+			}
+			if has(f.Flags, scan.FlagNotUTF8) {
+				refuse("This file is not UTF-8 text.")
+				continue
+			}
+			if pe.Kind == scan.KindDocument && f.Size > scan.MaxDocumentBytes {
+				refuse("This document is over 512 KiB.")
+				continue
+			}
+			sp, reason := findSpace(spaces, pe.Space)
+			if reason != "" {
+				refuse("%s", reason)
+				continue
+			}
+			e.Space = sp.Slug
+			if pe.Kind == scan.KindDocument {
+				if pe.Type == "" {
+					refuse("A document needs a type.")
+					continue
+				}
+				if pe.Slug != "" && !slugOK.MatchString(pe.Slug) {
+					refuse("The slug may hold only letters, digits, hyphens and underscores, up to 200.")
+					continue
+				}
+				e.Slug = effectiveSlug(pe)
+				if bySlug[e.Slug] > 1 {
+					refuse("Another entry in the plan has the slug %s.", e.Slug)
+					continue
+				}
+				if e.Title == "" {
+					e.Title = f.Heading
+				}
+				if e.Title == "" {
+					e.Title = Stem(pe.Path)
+				}
+			} else if pe.Title == "" {
+				refuse("A workbook needs a title.")
+				continue
+			}
+		case scan.KindObject:
+			if f.Kind != scan.KindObject {
+				refuse("An object cannot be made from this kind of file.")
+				continue
+			}
+			if !objectsAvailable {
+				refuse("This organization does not offer objects.")
+				continue
+			}
+			if pe.Scope != "organization" && pe.Scope != "document" {
+				refuse("An object needs a scope, organization or document.")
+				continue
+			}
+			if e.Name == "" {
+				e.Name = path.Base(pe.Path)
+			}
+		default:
+			refuse("The kind %q is not document, workbook or object.", pe.Kind)
+			continue
+		}
+		ok = append(ok, e)
+	}
+	return ok, bad
+}
+
+func effectiveSlug(e PlanEntry) string {
+	if e.Slug != "" {
+		return strings.ToLower(e.Slug)
+	}
+	return DefaultSlug(e.Path)
+}
+
+func has(flags []string, f string) bool {
+	for _, x := range flags {
+		if x == f {
+			return true
+		}
+	}
+	return false
+}
+
+// pathProblem is a sentence when p is not a clean path below the root.
+func pathProblem(p string) string {
+	const outside = "This path is outside the plan's folder."
+	if p == "" || strings.HasPrefix(p, "/") || strings.ContainsAny(p, "\\\x00") {
+		return outside
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." || seg == "." || seg == "" {
+			return outside
+		}
+	}
+	return ""
+}
+
+func findSpace(spaces []Space, key string) (Space, string) {
+	if key == "" {
+		return Space{}, "The entry names no space."
+	}
+	for _, s := range spaces {
+		if s.Slug == key || s.ID == key {
+			if s.Visibility == "public" {
+				return Space{}, "The Smrit CLI does not import into a public space. Publish from the web app."
+			}
+			return s, ""
+		}
+	}
+	return Space{}, "No space you can see is named " + quote(key) + "."
+}
+
+func quote(s string) string {
+	if len(s) > 60 {
+		s = s[:60]
+	}
+	return fmt.Sprintf("%q", s)
+}

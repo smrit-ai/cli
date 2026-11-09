@@ -177,23 +177,21 @@ func retryAfter(h string, now time.Time) time.Duration {
 	return d
 }
 
-// Call runs one tool and returns its structured result: structuredContent
-// when the server sent it, otherwise the first text block parsed as JSON,
-// otherwise that text as a JSON string.
-func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (json.RawMessage, error) {
-	if !validPath(c.Path) {
-		return nil, errors.New("The Smrit endpoint is not usable. Sign in again.")
-	}
-	if args == nil {
-		args = map[string]any{}
-	}
-	body, err := json.Marshal(map[string]any{
-		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-		"params": map[string]any{"name": tool, "arguments": args},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("The arguments could not be encoded: %v", err)
-	}
+// Response is what Do got back for any status it does not handle itself.
+type Response struct {
+	Status int
+	Header http.Header
+	Body   []byte
+}
+
+// Do sends one request to Origin+path with the bearer token and the version
+// header, under every rule Call has: the compiled origin only, the URL by
+// concatenation, no redirect followed, paced, a 429 waited out, one forced
+// refresh and retry on a 401, and 426 as ErrUpgrade. Any other status comes
+// back as a Response for the caller to read; a failure to send is
+// ErrUnavailable. header carries the content type and anything else the
+// caller sets, never the credential. The same body is sent on every attempt.
+func (c *Client) Do(ctx context.Context, method, path string, header http.Header, body []byte) (*Response, error) {
 	refreshed := false
 	var forced string
 	for attempt := 0; ; attempt++ {
@@ -207,13 +205,14 @@ func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (js
 				return nil, err
 			}
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Origin+c.Path, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, method, c.Origin+path, bytes.NewReader(body))
 		if err != nil {
 			return nil, ErrUnavailable
 		}
+		for k, v := range header {
+			req.Header[k] = v
+		}
 		req.Header.Set("Authorization", "Bearer "+tok)
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
 		req.Header.Set("Smrit-CLI-Version", c.Version)
 		resp, err := c.http().Do(req)
 		if err != nil {
@@ -245,24 +244,99 @@ func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (js
 			continue
 		case resp.StatusCode == http.StatusUpgradeRequired:
 			return nil, ErrUpgrade
-		case resp.StatusCode != http.StatusOK || rerr != nil:
+		case rerr != nil:
 			return nil, ErrUnavailable
 		}
-		return decode(raw, resp.Header.Get("Content-Type"))
+		return &Response{Status: resp.StatusCode, Header: resp.Header, Body: raw}, nil
 	}
 }
 
-func decode(raw []byte, contentType string) (json.RawMessage, error) {
+// rpc posts one JSON-RPC request to the MCP endpoint and returns the body of
+// a 200 answer.
+func (c *Client) rpc(ctx context.Context, method string, params map[string]any) (*Response, error) {
+	if !validPath(c.Path) {
+		return nil, errors.New("The Smrit endpoint is not usable. Sign in again.")
+	}
+	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+	if err != nil {
+		return nil, fmt.Errorf("The arguments could not be encoded: %v", err)
+	}
+	resp, err := c.Do(ctx, http.MethodPost, c.Path, http.Header{
+		"Content-Type": {"application/json"},
+		"Accept":       {"application/json, text/event-stream"},
+	}, body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status != http.StatusOK {
+		return nil, ErrUnavailable
+	}
+	return resp, nil
+}
+
+// Call runs one tool and returns its structured result: structuredContent
+// when the server sent it, otherwise the first text block parsed as JSON,
+// otherwise that text as a JSON string.
+func (c *Client) Call(ctx context.Context, tool string, args map[string]any) (json.RawMessage, error) {
+	if args == nil {
+		args = map[string]any{}
+	}
+	resp, err := c.rpc(ctx, "tools/call", map[string]any{"name": tool, "arguments": args})
+	if err != nil {
+		return nil, err
+	}
+	return decode(resp.Body, resp.Header.Get("Content-Type"))
+}
+
+// ListTools returns the names of the tools the server offers this caller.
+func (c *Client) ListTools(ctx context.Context) ([]string, error) {
+	resp, err := c.rpc(ctx, "tools/list", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	var env struct {
+		Result *struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(eventData(resp.Body, resp.Header.Get("Content-Type")), &env); err != nil {
+		return nil, fmt.Errorf("%w Smrit sent an answer this CLI cannot read.", ErrUnavailable)
+	}
+	if env.Error != nil {
+		return nil, &ToolError{Message: env.Error.Message}
+	}
+	if env.Result == nil {
+		return nil, fmt.Errorf("%w Smrit sent an answer this CLI cannot read.", ErrUnavailable)
+	}
+	names := make([]string, 0, len(env.Result.Tools))
+	for _, t := range env.Result.Tools {
+		names = append(names, t.Name)
+	}
+	return names, nil
+}
+
+// eventData is the JSON of a response: the first data line of an event
+// stream, or the body itself.
+func eventData(raw []byte, contentType string) []byte {
 	if strings.HasPrefix(contentType, "text/event-stream") {
 		sc := bufio.NewScanner(bytes.NewReader(raw))
 		sc.Buffer(make([]byte, 64<<10), maxBody)
 		for sc.Scan() {
 			if data, ok := strings.CutPrefix(sc.Text(), "data:"); ok {
-				raw = []byte(strings.TrimSpace(data))
-				break
+				return []byte(strings.TrimSpace(data))
 			}
 		}
 	}
+	return raw
+}
+
+func decode(raw []byte, contentType string) (json.RawMessage, error) {
+	raw = eventData(raw, contentType)
 	var env struct {
 		Result *struct {
 			Content []struct {

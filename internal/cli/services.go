@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/smrit-ai/cli/internal/auth"
+	"github.com/smrit-ai/cli/internal/importer"
 	"github.com/smrit-ai/cli/internal/mcp"
 	"github.com/smrit-ai/cli/internal/profile"
 	"github.com/smrit-ai/cli/internal/server"
@@ -48,7 +49,7 @@ func DefaultServices() *Services {
 
 // Commands is the command table for the given services.
 func Commands(s *Services) []Command {
-	return []Command{loginCommand(s), logoutCommand(s), statusCommand(s), callCommand(s), scanCommand()}
+	return []Command{loginCommand(s), logoutCommand(s), statusCommand(s), callCommand(s), scanCommand(), importCommand(s)}
 }
 
 var orgFlag = Flag{Name: "org", Usage: "The organization to use, when signed in to several."}
@@ -87,13 +88,14 @@ func report(env *Env, err error) int {
 
 func exitCode(err error) int {
 	var te *mcp.ToolError
+	var re *importer.RouteError
 	switch {
 	case errors.Is(err, profile.ErrSeveralProfiles):
 		return ExitUsage
 	case errors.Is(err, profile.ErrNoProfile), errors.Is(err, profile.ErrDamagedProfile),
 		errors.Is(err, auth.ErrNotSignedIn), errors.Is(err, mcp.ErrSignedOut):
 		return ExitNotSignedIn
-	case errors.As(err, &te), errors.Is(err, auth.ErrOrgMismatch), errors.Is(err, auth.ErrLoginFailed):
+	case errors.As(err, &te), errors.As(err, &re), errors.Is(err, auth.ErrOrgMismatch), errors.Is(err, auth.ErrLoginFailed):
 		return ExitRefused
 	case errors.Is(err, mcp.ErrUpgrade):
 		return ExitUpgrade

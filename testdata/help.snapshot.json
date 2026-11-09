@@ -46,6 +46,26 @@
       ]
     },
     {
+      "name": "import",
+      "summary": "Check an import plan and preview it without writing anything: smrit import <plan> --dry-run.",
+      "flags": [
+        {
+          "name": "org",
+          "usage": "The organization to use, when signed in to several.",
+          "default": "",
+          "bool": false,
+          "repeatable": false
+        },
+        {
+          "name": "dry-run",
+          "usage": "Preview what the plan would do. Nothing is written.",
+          "default": "",
+          "bool": true,
+          "repeatable": false
+        }
+      ]
+    },
+    {
       "name": "login",
       "summary": "Sign in through your browser.",
       "flags": [

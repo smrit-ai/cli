@@ -364,3 +364,16 @@ func TestRefreshFailureEndsTheCall(t *testing.T) {
 		t.Fatalf("%v, %d requests", err, f.hits)
 	}
 }
+
+func TestListTools(t *testing.T) {
+	f := newFake(t, func(n int, w http.ResponseWriter, r *http.Request) {
+		ok(w, `{"tools":[{"name":"spaces"},{"name":"create_object"}]}`)
+	})
+	names, err := client(f, &clock{}).ListTools(context.Background())
+	if err != nil || len(names) != 2 || names[1] != "create_object" {
+		t.Fatalf("%v %v", names, err)
+	}
+	if f.bodies[0]["method"] != "tools/list" {
+		t.Fatalf("%v", f.bodies[0])
+	}
+}
