@@ -19,6 +19,10 @@ type upgradeOutput struct {
 
 func (o upgradeOutput) String() string {
 	switch {
+	case o.Dev:
+		return fmt.Sprintf("smrit %s is a development build, so it is left as it is. The latest release is %s.", o.Current, o.Latest)
+	case o.Ahead:
+		return fmt.Sprintf("smrit %s is newer than the latest release, %s, so it is left as it is.", o.Current, o.Latest)
 	case o.UpToDate:
 		return fmt.Sprintf("smrit %s is the latest release.", o.Current)
 	case o.check:

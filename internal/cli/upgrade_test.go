@@ -77,8 +77,35 @@ func TestUpgradeInsideAPackageManagerExits4(t *testing.T) {
 func TestUpgradeUnavailableExits5(t *testing.T) {
 	srv, _ := latestServer(t)
 	svc := upgradeServices(srv, filepath.Join(t.TempDir(), "smrit"))
-	svc.Upgrader.Base = srv.URL + "/gone/download"
+	svc.Upgrader.Base = srv.URL + "/gone/releases/latest/download"
 	if code, _, errs := runCmd(t, svc, "upgrade", "--check"); code != ExitUnavailable || errs == "" {
 		t.Fatalf("exit %d: %q", code, errs)
+	}
+}
+
+// A binary newer than the latest release, or a development build, is left
+// alone with exit 0 and a sentence that says so.
+func TestUpgradeLeavesANewerOrDevelopmentBuildAlone(t *testing.T) {
+	for current, words := range map[string]string{"9.9.9": "newer than the latest release", "0.1.0-dev": "development build"} {
+		for _, check := range []bool{false, true} {
+			srv, other := latestServer(t)
+			exe := filepath.Join(t.TempDir(), "smrit")
+			if err := os.WriteFile(exe, []byte("old"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			svc := upgradeServices(srv, exe)
+			svc.Upgrader.Current = current
+			args := []string{"--json=false", "upgrade"}
+			if check {
+				args = append(args, "--check")
+			}
+			code, out, errs := runCmd(t, svc, args...)
+			if code != ExitOK || !strings.Contains(out, words) || strings.Contains(out, "Upgraded") || strings.Contains(out, " - ") {
+				t.Fatalf("%s check %v: exit %d %q %q", current, check, code, out, errs)
+			}
+			if b, _ := os.ReadFile(exe); string(b) != "old" || *other != 0 {
+				t.Fatalf("%s: the binary changed or something was downloaded", current)
+			}
+		}
 	}
 }

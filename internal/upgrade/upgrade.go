@@ -14,6 +14,7 @@ package upgrade
 import (
 	"archive/tar"
 	"bytes"
+	"cmp"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -28,6 +29,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -52,6 +54,64 @@ var packageManaged = []string{"/Cellar/", "/homebrew/", "/nix/store/", "/usr/bin
 
 // versionTag is a release tag, as make release accepts it, with its v.
 var versionTag = regexp.MustCompile(`^v([0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?)$`)
+
+// versionParts splits a version as make release accepts it.
+var versionParts = regexp.MustCompile(`^([0-9]+)\.([0-9]+)\.([0-9]+)(?:[-.]([0-9A-Za-z.]+))?$`)
+
+// version is a parsed X.Y.Z with an optional suffix, such as rc.1 or dev.
+type version struct {
+	n   [3]int
+	pre string
+}
+
+func parseVersion(s string) (version, bool) {
+	m := versionParts.FindStringSubmatch(s)
+	if m == nil {
+		return version{}, false
+	}
+	var v version
+	for i := range v.n {
+		n, err := strconv.Atoi(m[i+1])
+		if err != nil {
+			return version{}, false
+		}
+		v.n[i] = n
+	}
+	v.pre = m[4]
+	return v, true
+}
+
+// compare orders versions by number, and a release after any version of
+// the same number with a suffix.
+func compare(a, b version) int {
+	for i := range a.n {
+		if c := cmp.Compare(a.n[i], b.n[i]); c != 0 {
+			return c
+		}
+	}
+	switch {
+	case a.pre == b.pre:
+		return 0
+	case a.pre == "":
+		return 1
+	case b.pre == "":
+		return -1
+	}
+	return strings.Compare(a.pre, b.pre)
+}
+
+// judge sets whether this binary is the latest release, newer than it, or
+// a development build, which has no place in the order.
+func judge(st *Status) {
+	cur, ok := parseVersion(st.Current)
+	latest, lok := parseVersion(st.Latest)
+	if !ok || !lok || strings.Contains(cur.pre, "dev") {
+		st.Dev = true
+		return
+	}
+	c := compare(cur, latest)
+	st.UpToDate, st.Ahead = c == 0, c > 0
+}
 
 // RefusedError is an upgrade smrit will not do, with one sentence for a
 // person. The binary is as it was.
@@ -97,6 +157,10 @@ type Status struct {
 	Current  string `json:"current"`
 	Latest   string `json:"latest"`
 	UpToDate bool   `json:"up_to_date"`
+	// Ahead is a binary newer than the latest release; Dev a development
+	// build. Neither is replaced.
+	Ahead bool `json:"ahead"`
+	Dev   bool `json:"dev"`
 	// Upgraded is whether the binary was replaced; Path is the binary.
 	Upgraded bool   `json:"upgraded"`
 	Path     string `json:"path,omitempty"`
@@ -143,12 +207,15 @@ func (u *Upgrader) client(follow bool) *http.Client {
 	return hc
 }
 
-func (u *Upgrader) base() (string, error) {
+// releases is the releases folder Base names: Base without its
+// latest/download, so releases/latest and releases/download/<tag> hang off it.
+func (u *Upgrader) releases() (string, error) {
 	b, err := url.Parse(u.Base)
-	if err != nil || b.Scheme != "https" || b.Host == "" || b.User != nil || b.RawQuery != "" || path.Base(b.Path) != "download" {
+	if err != nil || b.Scheme != "https" || b.Host == "" || b.User != nil || b.RawQuery != "" || b.Fragment != "" ||
+		!strings.HasSuffix(strings.TrimRight(b.Path, "/"), "/latest/download") {
 		return "", refused("The release address this smrit was built with is not an https address, so it cannot upgrade itself.")
 	}
-	return strings.TrimRight(u.Base, "/"), nil
+	return strings.TrimSuffix(strings.TrimRight(u.Base, "/"), "/latest/download"), nil
 }
 
 func (u *Upgrader) current() string { return strings.TrimPrefix(u.Current, "v") }
@@ -157,20 +224,20 @@ func (u *Upgrader) current() string { return strings.TrimPrefix(u.Current, "v") 
 // releases/latest redirects, and downloads nothing.
 func (u *Upgrader) Check(ctx context.Context) (Status, error) {
 	st := Status{Current: u.current()}
-	base, err := u.base()
+	releases, err := u.releases()
 	if err != nil {
 		return st, err
 	}
-	if st.Latest, err = u.latest(ctx, base); err != nil {
+	if st.Latest, err = u.latest(ctx, releases); err != nil {
 		return st, err
 	}
-	st.UpToDate = st.Latest == st.Current
+	judge(&st)
 	return st, nil
 }
 
 // latest reads the tag releases/latest redirects to, without following it.
-func (u *Upgrader) latest(ctx context.Context, base string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimSuffix(base, "/download"), nil)
+func (u *Upgrader) latest(ctx context.Context, releases string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releases+"/latest", nil)
 	if err != nil {
 		return "", unavailable("The latest release could not be looked up.")
 	}
@@ -260,7 +327,7 @@ func (u *Upgrader) Run(ctx context.Context) (Status, error) {
 		return st, refused("smrit releases are built for macOS and Linux on 64 bit Intel and ARM only, so it cannot upgrade itself here.")
 	}
 	asset := "smrit_" + goos + "_" + goarch + ".tar.gz"
-	base, err := u.base()
+	releases, err := u.releases()
 	if err != nil {
 		return st, err
 	}
@@ -287,12 +354,16 @@ func (u *Upgrader) Run(ctx context.Context) (Status, error) {
 		}
 	}()
 
-	if st.Latest, err = u.latest(ctx, base); err != nil {
+	if st.Latest, err = u.latest(ctx, releases); err != nil {
 		return st, err
 	}
-	if st.UpToDate = st.Latest == st.Current; st.UpToDate {
+	if judge(&st); st.UpToDate || st.Ahead || st.Dev {
 		return st, nil
 	}
+	// The assets of the tag just read, not of whatever is latest by the
+	// time they are fetched, so the version reported is the one installed.
+	// The tag passed versionTag, so it is safe in a path.
+	base := releases + "/download/v" + st.Latest
 
 	sums, err := u.get(ctx, base+"/SHA256SUMS", "SHA256SUMS", maxSums)
 	if err != nil {

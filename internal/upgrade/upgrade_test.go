@@ -31,22 +31,40 @@ const (
 	asset     = "smrit_linux_amd64.tar.gz"
 )
 
-// release is a fake GitHub: releases/latest redirects to the tag, and the
-// download folder serves the tarball and SHA256SUMS. Every request is
-// counted, with any Authorization header it carried.
+// firstTag is the release the fake names as latest unless a test moves it.
+const firstTag = "v1.2.3"
+
+// release is a fake GitHub: releases/latest redirects to the latest tag,
+// releases/download/<tag>/ serves that release's tarball and SHA256SUMS, and
+// releases/latest/download/ serves whichever release is latest now. Every
+// request is counted, with any Authorization header it carried.
 type release struct {
 	srv *httptest.Server
 
-	mu        sync.Mutex
-	hits      []string
-	auths     []string
-	tag       string
+	mu    sync.Mutex
+	hits  []string
+	auths []string
+	// tag is the latest release; moveTo, when set, becomes the latest
+	// right after releases/latest first answers.
+	tag    string
+	moveTo string
+	// tarball and sums are firstTag's assets; others holds any other
+	// release's, by tag.
 	tarball   []byte
 	sums      string
+	others    map[string]assets
 	redirects map[string]string // path -> absolute URL to redirect to
 	// chunked sends the tarball without a Content-Length.
 	chunked bool
 }
+
+type assets struct {
+	tarball []byte
+	sums    string
+}
+
+// assetPath is where the upgrader should fetch name for the first release.
+func assetPath(name string) string { return "/releases/download/" + firstTag + "/" + name }
 
 func tarball(t *testing.T, members map[string]string) []byte {
 	t.Helper()
@@ -79,7 +97,7 @@ func sumLine(b []byte, name string) string {
 
 func newRelease(t *testing.T) *release {
 	t.Helper()
-	r := &release{tag: "v1.2.3", redirects: map[string]string{}}
+	r := &release{tag: firstTag, redirects: map[string]string{}, others: map[string]assets{}}
 	r.tarball = tarball(t, map[string]string{"smrit": newBinary, "README.md": "not the binary\n"})
 	r.sums = sumLine([]byte("other"), "smrit_darwin_arm64.tar.gz") + sumLine(r.tarball, asset)
 	r.srv = httptest.NewTLSServer(http.HandlerFunc(r.serve))
@@ -92,24 +110,42 @@ func (r *release) serve(w http.ResponseWriter, req *http.Request) {
 	r.hits = append(r.hits, req.URL.Path)
 	r.auths = append(r.auths, req.Header.Get("Authorization"))
 	to, redirected := r.redirects[req.URL.Path]
-	tag, tb, sums, chunked := r.tag, r.tarball, r.sums, r.chunked
+	latest, chunked := r.tag, r.chunked
+	if req.URL.Path == "/releases/latest" && r.moveTo != "" {
+		r.tag, r.moveTo = r.moveTo, ""
+	}
+	of := func(tag string) (assets, bool) {
+		if tag == firstTag {
+			return assets{r.tarball, r.sums}, true
+		}
+		a, ok := r.others[tag]
+		return a, ok
+	}
+	tag, name := "", ""
+	if rest, ok := strings.CutPrefix(req.URL.Path, "/releases/latest/download/"); ok {
+		tag, name = latest, rest
+	} else if rest, ok := strings.CutPrefix(req.URL.Path, "/releases/download/"); ok {
+		tag, name, _ = strings.Cut(rest, "/")
+	}
+	a, found := of(tag)
 	r.mu.Unlock()
 	if redirected {
 		http.Redirect(w, req, to, http.StatusFound)
 		return
 	}
-	switch req.URL.Path {
-	case "/releases/latest":
-		http.Redirect(w, req, "/smrit-ai/cli/releases/tag/"+tag, http.StatusFound)
-	case "/releases/latest/download/" + asset:
+	switch {
+	case req.URL.Path == "/releases/latest":
+		http.Redirect(w, req, "/smrit-ai/cli/releases/tag/"+latest, http.StatusFound)
+	case found && name == asset:
+		tb := a.tarball
 		if chunked {
 			w.Write(tb[:1])
 			w.(http.Flusher).Flush()
 			tb = tb[1:]
 		}
 		w.Write(tb)
-	case "/releases/latest/download/SHA256SUMS":
-		w.Write([]byte(sums))
+	case found && name == "SHA256SUMS":
+		w.Write([]byte(a.sums))
 	default:
 		http.NotFound(w, req)
 	}
@@ -321,7 +357,7 @@ func TestUpgradeRefusals(t *testing.T) {
 		}, "larger"},
 		{"redirect to another host", func(t *testing.T, r *release, u *Upgrader) {
 			other := newRelease(t)
-			r.redirects["/releases/latest/download/"+asset] = other.srv.URL + "/releases/latest/download/" + asset
+			r.redirects[assetPath(asset)] = other.srv.URL + assetPath(asset)
 			t.Cleanup(func() {
 				if n := len(other.requests()); n != 0 {
 					t.Errorf("the other host got %d requests", n)
@@ -330,7 +366,27 @@ func TestUpgradeRefusals(t *testing.T) {
 		}, "redirected"},
 		{"redirect to plain http", func(t *testing.T, r *release, u *Upgrader) {
 			u.AllowedHosts = []string{hostOf(t, r.srv.URL)}
-			r.redirects["/releases/latest/download/"+asset] = "http://" + hostOf(t, r.srv.URL) + "/x"
+			r.redirects[assetPath(asset)] = "http://" + hostOf(t, r.srv.URL) + "/x"
+		}, "redirected"},
+		{"redirect carrying userinfo", func(t *testing.T, r *release, u *Upgrader) {
+			other := newRelease(t)
+			u.AllowedHosts = []string{hostOf(t, other.srv.URL)}
+			r.redirects[assetPath(asset)] = "https://smrit:secret@" + hostOf(t, other.srv.URL) + assetPath(asset)
+			t.Cleanup(func() {
+				if n := len(other.requests()); n != 0 {
+					t.Errorf("the other host got %d requests", n)
+				}
+			})
+		}, "redirected"},
+		{"redirect to an allowed host on another port", func(t *testing.T, r *release, u *Upgrader) {
+			other := newRelease(t)
+			u.AllowedHosts = []string{strings.Split(hostOf(t, other.srv.URL), ":")[0]}
+			r.redirects[assetPath(asset)] = other.srv.URL + assetPath(asset)
+			t.Cleanup(func() {
+				if n := len(other.requests()); n != 0 {
+					t.Errorf("the other host got %d requests", n)
+				}
+			})
 		}, "redirected"},
 		{"a base that is not https", func(t *testing.T, r *release, u *Upgrader) {
 			u.Base = "http" + strings.TrimPrefix(u.Base, "https")
@@ -369,7 +425,7 @@ func hostOf(t *testing.T, raw string) string {
 func TestUpgradeFollowsARedirectToAnAllowedHost(t *testing.T) {
 	r := newRelease(t)
 	assets := newRelease(t)
-	r.redirects["/releases/latest/download/"+asset] = assets.srv.URL + "/releases/latest/download/" + asset
+	r.redirects[assetPath(asset)] = assets.srv.URL + assetPath(asset)
 	exe := installed(t, "bin/smrit")
 	u := upgrader(r, exe)
 	u.AllowedHosts = []string{hostOf(t, assets.srv.URL)}
@@ -451,7 +507,7 @@ func TestUnavailableWhenTheReleaseCannotBeFetched(t *testing.T) {
 	r := newRelease(t)
 	exe := installed(t, "bin/smrit")
 	u := upgrader(r, exe)
-	u.Base = r.srv.URL + "/nowhere/download"
+	u.Base = r.srv.URL + "/nowhere/releases/latest/download"
 	_, err := u.Run(testContext(t))
 	var ue *UnavailableError
 	if !errors.As(err, &ue) {
@@ -462,4 +518,76 @@ func TestUnavailableWhenTheReleaseCannotBeFetched(t *testing.T) {
 		t.Fatal("the binary changed")
 	}
 	onlyBinary(t, exe)
+}
+
+// The release installed is the one reported: the assets come from the tag
+// releases/latest named, even when a newer release lands in between.
+func TestUpgradeInstallsTheTagItReports(t *testing.T) {
+	r := newRelease(t)
+	newer := tarball(t, map[string]string{"smrit": "NEWER BINARY\n"})
+	r.others["v1.2.4"] = assets{newer, sumLine(newer, asset)}
+	r.moveTo = "v1.2.4"
+	exe := installed(t, "bin/smrit")
+	res, err := upgrader(r, exe).Run(testContext(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Latest != "1.2.3" || read(t, exe) != newBinary {
+		t.Fatalf("reported %s, installed %q", res.Latest, read(t, exe))
+	}
+	for _, p := range r.requests() {
+		if strings.HasPrefix(p, "/releases/latest/download/") {
+			t.Fatalf("downloaded from the moving address: %v", r.requests())
+		}
+	}
+}
+
+// A binary newer than the latest release, or a development build, is left
+// as it is, and the result says so.
+func TestUpgradeLeavesANewerBinaryAlone(t *testing.T) {
+	for _, c := range []struct {
+		current    string
+		ahead, dev bool
+	}{
+		{"1.10.0", true, false},
+		{"2.0.0", true, false},
+		{"1.2.4-rc.1", true, false},
+		{"0.1.0-dev", false, true},
+		{"1.2.3-dev", false, true},
+	} {
+		t.Run(c.current, func(t *testing.T) {
+			r := newRelease(t)
+			exe := installed(t, "bin/smrit")
+			u := upgrader(r, exe)
+			u.Current = c.current
+			res, err := u.Run(testContext(t))
+			if err != nil || res.Upgraded || res.UpToDate || res.Ahead != c.ahead || res.Dev != c.dev {
+				t.Fatalf("%+v %v", res, err)
+			}
+			if r.downloads() != 0 || read(t, exe) != oldBinary {
+				t.Fatalf("downloaded %v", r.requests())
+			}
+			chk, err := u.Check(testContext(t))
+			if err != nil || chk.UpToDate || chk.Ahead != c.ahead || chk.Dev != c.dev {
+				t.Fatalf("check %+v %v", chk, err)
+			}
+		})
+	}
+}
+
+// An older binary is upgraded, compared by number and not as text.
+func TestUpgradeComparesVersionsByNumber(t *testing.T) {
+	for _, current := range []string{"1.2.2", "1.1.9", "0.9.10", "1.2.3-rc.1"} {
+		t.Run(current, func(t *testing.T) {
+			r := newRelease(t)
+			r.tag = "v1.2.3"
+			exe := installed(t, "bin/smrit")
+			u := upgrader(r, exe)
+			u.Current = current
+			res, err := u.Run(testContext(t))
+			if err != nil || !res.Upgraded || res.Ahead || res.Dev || read(t, exe) != newBinary {
+				t.Fatalf("%+v %v", res, err)
+			}
+		})
+	}
 }
