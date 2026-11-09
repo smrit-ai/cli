@@ -42,6 +42,9 @@ type ReportEntry struct {
 	Type     string    `json:"type"`
 	Slug     string    `json:"slug"`
 	Title    string    `json:"title"`
+	// BlankRowsSkipped is how many rows of a CSV had no value in any
+	// column and would be left out.
+	BlankRowsSkipped int `json:"blank_rows_skipped"`
 }
 
 // Report is the whole dry run.
@@ -295,9 +298,11 @@ func DryRun(ctx context.Context, in Input) (Report, error) {
 		case scan.KindWorkbook:
 			// Every row is checked now, as the run checks it before it
 			// writes anything.
-			if _, reason := readWorkbook(e); reason != "" {
+			_, blank, reason := readWorkbook(e)
+			if reason != "" {
 				r.Action, r.Reason = ActionRefused, reason
 			}
+			r.BlankRowsSkipped = blank
 		case scan.KindObject:
 			if _, ok := objectType(e); !ok {
 				r.Action, r.Reason = ActionRefused, objectBadType

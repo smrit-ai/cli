@@ -310,8 +310,6 @@ func TestWorkbookCellsSmritRefusesAreRefusedFirst(t *testing.T) {
 		name, column string
 		row          []string
 	}{
-		{"blank row", "", []string{"", "", "", "", "", ""}},
-		{"blank row of spaces", "", []string{"", " ", "", "  ", "", ""}},
 		{"date not a day", "Due", goodRow(3, "2026-02-30")},
 		{"date month only", "Due", goodRow(3, "2026-11")},
 		{"date no padding", "Due", goodRow(3, "2026-11-9")},
@@ -323,14 +321,28 @@ func TestWorkbookCellsSmritRefusesAreRefusedFirst(t *testing.T) {
 		{"date ordinal", "Due", goodRow(3, "2026-313")},
 		{"date words", "Due", goodRow(3, "SECRETCELL")},
 		{"relation words", "Link", goodRow(5, "SECRETCELL")},
-		{"relation bare", "Link", goodRow(5, "smrit:d:"+shortID)},
 		{"relation kind", "Link", goodRow(5, "<smrit:x:"+shortID+">")},
 		{"relation short id", "Link", goodRow(5, "<smrit:d:SECRETCELL>")},
 		{"relation id too large", "Link", goodRow(5, "<smrit:d:zzzzzzzzzzzzzzzzzzzzz>")},
 		{"relation seq on a document", "Link", goodRow(5, "<smrit:d:"+shortID+"#3>")},
 		{"relation seq leading zero", "Link", goodRow(5, "<smrit:wb:"+shortID+"#03>")},
 		{"relation suffix", "Link", goodRow(5, "<smrit:d:"+shortID+">?x")},
-		{"relation path", "Link", goodRow(5, "/d/"+shortID)},
+		{"relation other host", "Link", goodRow(5, "https://evil.example/d/"+shortID)},
+		{"relation web origin with port", "Link", goodRow(5, "https://smrit.ai:443/d/"+shortID)},
+		{"relation web origin over http", "Link", goodRow(5, "http://smrit.ai/d/"+shortID)},
+		{"relation userinfo", "Link", goodRow(5, "https://me@smrit.ai/d/"+shortID)},
+		{"relation scheme relative", "Link", goodRow(5, "//smrit.ai/d/"+shortID)},
+		{"relation query", "Link", goodRow(5, "/d/"+shortID+"?x=1")},
+		{"relation params", "Link", goodRow(5, "/d/"+shortID+";x")},
+		{"relation seq on a document path", "Link", goodRow(5, "/d/"+shortID+"#12")},
+		{"relation fragment on a workbook", "Link", goodRow(5, "/w/"+shortID+"#top")},
+		{"relation empty fragment", "Link", goodRow(5, "/w/"+shortID+"#")},
+		{"relation workbook path too long", "Link", goodRow(5, "/acme/eng/w/"+shortID+"/rows")},
+		{"relation document view", "Link", goodRow(5, "/d/"+shortID+"/view")},
+		{"relation upper case path", "Link", goodRow(5, "/D/"+shortID)},
+		{"relation bare kind", "Link", goodRow(5, "smrit:x:"+shortID)},
+		{"relation bare seq on a document", "Link", goodRow(5, "smrit:d:"+shortID+"#3")},
+		{"relation bracket", "Link", goodRow(5, "https://[smrit.ai/d/"+shortID)},
 		{"text zero width", "Task", goodRow(0, "SECRET​CELL")},
 		{"text control", "Task", goodRow(0, "SECRET\x01CELL")},
 		{"text lone CR", "Task", goodRow(0, "SECRET\rCELL")},
@@ -381,6 +393,23 @@ func TestWorkbookCellsSmritAcceptsAreSent(t *testing.T) {
 		"relation row":         goodRow(5, "<smrit:wb:"+shortID+"#12>"),
 		"relation space uuid":  goodRow(5, "<smrit:s:123e4567-e89b-12d3-a456-426614174000>"),
 		"relation padded":      goodRow(5, " <smrit:d:"+shortID+"> "),
+		"relation bare":        goodRow(5, "smrit:d:"+shortID),
+		"relation bare row":    goodRow(5, "smrit:wb:"+shortID+"#12"),
+		"relation bare uuid":   goodRow(5, "smrit:s:123e4567-e89b-12d3-a456-426614174000"),
+		"relation path":        goodRow(5, "/d/"+shortID),
+		"relation path edit":   goodRow(5, "/d/"+shortID+"/edit"),
+		"relation path slash":  goodRow(5, "/d/"+shortID+"/"),
+		"relation wb path":     goodRow(5, "/w/"+shortID),
+		"relation wb path row": goodRow(5, "/w/"+shortID+"#12"),
+		"relation space path":  goodRow(5, "/acme/eng/d/"+shortID),
+		"relation space edit":  goodRow(5, "/acme/eng/d/"+shortID+"/edit"),
+		"relation space wb":    goodRow(5, "/acme/eng/w/"+shortID),
+		"relation space row":   goodRow(5, "/acme/eng/w/"+shortID+"#12"),
+		"relation relative":    goodRow(5, "acme/eng/d/"+shortID),
+		"relation web":         goodRow(5, "https://smrit.ai/d/"+shortID),
+		"relation web upper":   goodRow(5, "HTTPS://SMRIT.AI/w/"+shortID+"#3"),
+		"relation web space":   goodRow(5, "https://smrit.ai/acme/eng/d/"+shortID+"/edit"),
+		"relation web slash":   goodRow(5, "https://smrit.ai/acme/eng/w/"+shortID+"/"),
 		"text tab and newline": goodRow(0, "tab\there\r\nand a line"),
 		"text emoji":           goodRow(0, "ship it \U0001f680️"),
 		"number negative zero": goodRow(1, "-0"),
@@ -468,5 +497,79 @@ func TestWorkbookResumeAfterLostWorkbookAnswer(t *testing.T) {
 	}
 	if len(f.toolCalls("get_document_metadata")) == 0 {
 		t.Fatal("the resume did not look for the workbook")
+	}
+}
+
+// A row with no value in any column is skipped and counted, never sent:
+// Smrit refuses an add that names no column.
+func TestWorkbookBlankRowsSkippedAndCounted(t *testing.T) {
+	rep, f, dry := runLinkCSV(t, []string{"", "", "", "", "", ""}, goodRow(0, "b"), []string{"", " ", "", "  ", "", ""})
+	e := entryOf(t, rep, "tasks.csv")
+	if e.Status != state.StatusCreated || e.BlankRowsSkipped != 2 {
+		t.Fatalf("%+v", e)
+	}
+	if dry.Entries[0].Action != ActionCreate || dry.Entries[0].BlankRowsSkipped != 2 {
+		t.Fatalf("dry run %+v", dry.Entries[0])
+	}
+	n, books := f.workbookRows()
+	if n != 2 {
+		t.Fatalf("%d rows", n)
+	}
+	for _, r := range books[0].Rows {
+		if len(r) == 0 {
+			t.Fatal("a blank row was sent")
+		}
+	}
+	out, _ := json.Marshal(rep)
+	if !strings.Contains(string(out), `"blank_rows_skipped":2`) {
+		t.Fatalf("%s", out)
+	}
+}
+
+// Column names, option values and the workbook's name meet Smrit's rules
+// before the describing document is made, in the dry run and the run.
+func TestWorkbookSchemaRefusedBeforeAnythingIsWritten(t *testing.T) {
+	long := strings.Repeat("n", 201)
+	cases := map[string]func(e *plan.PlanEntry){
+		"column double space":     func(e *plan.PlanEntry) { e.Columns[0].Name = "Task  name" },
+		"column padded":           func(e *plan.PlanEntry) { e.Columns[0].Name = " Task" },
+		"column newline":          func(e *plan.PlanEntry) { e.Columns[0].Name = "Task\nname" },
+		"column no break space":   func(e *plan.PlanEntry) { e.Columns[0].Name = "Task\u00a0name" },
+		"column too long":         func(e *plan.PlanEntry) { e.Columns[0].Name = long },
+		"column hidden":           func(e *plan.PlanEntry) { e.Columns[0].Name = "Task\u200b" },
+		"value double space":      func(e *plan.PlanEntry) { e.Columns[2].Values = []string{"open", "not  done"} },
+		"value too long":          func(e *plan.PlanEntry) { e.Columns[2].Values = []string{"open", long} },
+		"value twice":             func(e *plan.PlanEntry) { e.Columns[2].Values = []string{"open", "open"} },
+		"value blank":             func(e *plan.PlanEntry) { e.Columns[2].Values = []string{"open", " "} },
+		"workbook name too long":  func(e *plan.PlanEntry) { e.Title = long },
+		"workbook name two lines": func(e *plan.PlanEntry) { e.Title = "Tasks\nlist" },
+		"workbook name spacing":   func(e *plan.PlanEntry) { e.Title = "Tasks  list" },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			e := workbookEntry("tasks.csv")
+			e.Columns = append([]plan.Column{}, taskColumns...)
+			e.Columns[2].Values = append([]string{}, taskColumns[2].Values...)
+			change(&e)
+			header := make([]string, len(e.Columns))
+			for i, c := range e.Columns {
+				header[i] = c.Name
+			}
+			write(t, root, "tasks.csv", csvOf(header, []string{"a", "1", "open", "2026-11-01", "true"}))
+			f := newStore(t)
+			p := plan.Plan{Version: 1, Root: root, Entries: []plan.PlanEntry{e}}
+			dry, err := DryRun(context.Background(), Input{Plan: p, MCP: f.client(), Route: &Route{MCP: f.client()}})
+			if err != nil || dry.Entries[0].Action != ActionRefused {
+				t.Fatalf("dry run %v %+v", err, dry.Entries)
+			}
+			rep, _ := Run(context.Background(), p, f.opts(t.TempDir()))
+			if got := entryOf(t, rep, "tasks.csv"); got.Status != state.StatusRefused || got.Error != dry.Entries[0].Reason {
+				t.Fatalf("%+v", got)
+			}
+			if len(f.toolCalls("create_document"))+len(f.toolCalls("write_workbook"))+len(f.toolCalls("write_records")) != 0 {
+				t.Fatal("something was written")
+			}
+		})
 	}
 }

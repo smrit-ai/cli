@@ -48,50 +48,57 @@ const (
 // readWorkbook reads the CSV the rescan listed and turns every row into the
 // values write_records takes, checking every cell first. A file that does
 // not fit the plan is refused, with one sentence, before anything is
-// written.
-func readWorkbook(e plan.Entry) ([]map[string]any, string) {
-	if reason := checkColumns(e.Columns); reason != "" {
-		return nil, reason
+// written. A row with no value in any column is left out and counted in
+// blank: Smrit refuses an add that names no column.
+func readWorkbook(e plan.Entry) (rows []map[string]any, blank int, reason string) {
+	rows, blank, reason = readRows(e)
+	if reason != "" {
+		return nil, 0, reason
+	}
+	return rows, blank, ""
+}
+
+func readRows(e plan.Entry) ([]map[string]any, int, string) {
+	if reason := checkSchema(e); reason != "" {
+		return nil, 0, reason
 	}
 	if e.Size > MaxWorkbookBytes {
-		return nil, wbTooBig
+		return nil, 0, wbTooBig
 	}
 	data, err := readExact(e)
 	if err != nil {
-		return nil, err.Error()
+		return nil, 0, err.Error()
 	}
 	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	cr := csv.NewReader(bytes.NewReader(data))
 	cr.FieldsPerRecord = -1
 	header, err := cr.Read()
 	if err == io.EOF {
-		return nil, wbEmpty
+		return nil, 0, wbEmpty
 	}
 	if err != nil {
-		return nil, csvError(err)
+		return nil, 0, csvError(err)
 	}
 	if len(header) != len(e.Columns) {
-		return nil, wbHeader
+		return nil, 0, wbHeader
 	}
 	for i, c := range e.Columns {
 		if header[i] != c.Name {
-			return nil, wbHeader
+			return nil, 0, wbHeader
 		}
 	}
 	var rows []map[string]any
+	blank := 0
 	for n := 1; ; n++ {
 		rec, err := cr.Read()
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			return nil, csvError(err)
-		}
-		if n > maxWorkbookRows {
-			return nil, wbTooManyRows
+			return nil, 0, csvError(err)
 		}
 		if len(rec) != len(header) {
-			return nil, fmt.Sprintf("Row %d under the header has %d cells and the header has %d.", n, len(rec), len(header))
+			return nil, 0, fmt.Sprintf("Row %d under the header has %d cells and the header has %d.", n, len(rec), len(header))
 		}
 		row := map[string]any{}
 		var keys []int
@@ -99,28 +106,56 @@ func readWorkbook(e plan.Entry) ([]map[string]any, string) {
 		for i, c := range e.Columns {
 			v, ok, reason := cell(rec[i], c)
 			if reason != "" {
-				return nil, fmt.Sprintf("Row %d under the header has a value in the %s column that %s.", n, columnName(c.Name), reason)
+				return nil, 0, fmt.Sprintf("Row %d under the header has a value in the %s column that %s.", n, columnName(c.Name), reason)
 			}
 			if ok {
 				row[c.Name] = v.wire
 				keys, vals = append(keys, i+1), append(vals, v)
 			}
 		}
-		// Smrit refuses a row that names no column.
 		if len(row) == 0 {
-			return nil, fmt.Sprintf("Row %d under the header has no value in any column.", n)
+			blank++
+			continue
 		}
 		if storedRowBytes(keys, vals) > maxRowBytes {
-			return nil, fmt.Sprintf("Row %d under the header is over 16 KiB, the most one workbook row holds.", n)
+			return nil, 0, fmt.Sprintf("Row %d under the header is over 16 KiB, the most one workbook row holds.", n)
+		}
+		if len(rows) == maxWorkbookRows {
+			return nil, 0, wbTooManyRows
 		}
 		rows = append(rows, row)
 	}
-	return rows, ""
+	return rows, blank, ""
 }
 
-// checkColumns refuses columns Smrit would refuse, before anything is
-// written for the workbook.
-func checkColumns(cols []plan.Column) string {
+// maxName is the most characters Smrit takes in a column name, an option
+// value or a workbook name.
+const maxName = 200
+
+// checkName is Smrit's check_name (api/smrit/workbooks/registry.py): not
+// blank, one line and single spaced, at most 200 characters, and no hidden
+// or control character. It says what is wrong without repeating the name.
+func checkName(name string) string {
+	switch {
+	case strings.TrimSpace(name) == "":
+		return "is blank"
+	case name != strings.Join(strings.Fields(name), " "):
+		return "is not one line and single spaced"
+	case utf8.RuneCountInString(name) > maxName:
+		return "is over 200 characters"
+	case hiddenOrControl(name):
+		return "carries a hidden or control character"
+	}
+	return ""
+}
+
+// checkSchema refuses a workbook name, columns or option values Smrit would
+// refuse, before anything is written for the workbook.
+func checkSchema(e plan.Entry) string {
+	if why := checkName(e.Title); why != "" {
+		return "The workbook's title " + why + ", so Smrit would not take it as a workbook name."
+	}
+	cols := e.Columns
 	if len(cols) == 0 {
 		return wbNoColumns
 	}
@@ -128,10 +163,11 @@ func checkColumns(cols []plan.Column) string {
 		return "A workbook holds at most 100 columns."
 	}
 	seen := map[string]bool{}
-	for _, c := range cols {
+	for i, c := range cols {
+		if why := checkName(c.Name); why != "" {
+			return fmt.Sprintf("Column %d's name in the plan %s.", i+1, why)
+		}
 		switch {
-		case strings.TrimSpace(c.Name) == "":
-			return "A column in the plan has no name."
 		case seen[c.Name]:
 			return fmt.Sprintf("The plan names the %s column twice.", columnName(c.Name))
 		case !columnTypes[c.Type]:
@@ -140,13 +176,11 @@ func checkColumns(cols []plan.Column) string {
 			return fmt.Sprintf("The %s column is an option column and the plan gives it no values.", columnName(c.Name))
 		case c.Type != "option" && len(c.Values) > 0:
 			return fmt.Sprintf("The %s column has values and is not an option column.", columnName(c.Name))
-		case hiddenOrControl(c.Name) || strings.ContainsAny(c.Name, "\t\n\r"):
-			return "A column name in the plan carries a hidden or control character."
 		}
 		values := map[string]bool{}
-		for _, v := range c.Values {
-			if strings.TrimSpace(v) == "" || v != strings.TrimSpace(v) || hiddenOrControl(v) || strings.ContainsAny(v, "\t\n\r") {
-				return fmt.Sprintf("A value of the %s column is blank, padded, or carries a hidden or control character.", columnName(c.Name))
+		for j, v := range c.Values {
+			if why := checkName(v); why != "" {
+				return fmt.Sprintf("Value %d of the %s column %s.", j+1, columnName(c.Name), why)
 			}
 			if values[v] {
 				return fmt.Sprintf("The %s column lists a value twice.", columnName(c.Name))
@@ -235,7 +269,8 @@ func (r *runner) workbook(e plan.Entry) error {
 		r.failWithID(e, wbChangedPart, prev.ID)
 		return nil
 	}
-	rows, reason := readWorkbook(e)
+	rows, blank, reason := readWorkbook(e)
+	r.out[e.Index].BlankRowsSkipped = blank
 	if reason != "" {
 		if resumed {
 			r.failWithID(e, reason, prev.ID)

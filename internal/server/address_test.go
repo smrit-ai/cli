@@ -19,6 +19,7 @@ const root = "../.."
 var compiledIn = map[string][2]string{
 	"Address":     {"address.go", "address_dev.go"},
 	"TroveOrigin": {"trove.go", "trove_dev.go"},
+	"WebOrigin":   {"web.go", "web_dev.go"},
 }
 
 // declares reports whether the file declares or assigns an identifier named name.
@@ -136,6 +137,23 @@ func TestReleaseTroveOriginValueIsFixed(t *testing.T) {
 	}
 }
 
+func TestReleaseWebOriginValueIsFixed(t *testing.T) {
+	src, err := os.ReadFile("web.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), "//go:build !dev") || !strings.Contains(string(src), `const WebOrigin = "https://smrit.ai"`) {
+		t.Error("release WebOrigin must be the constant https://smrit.ai behind !dev")
+	}
+	dev, err := os.ReadFile("web_dev.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dev), "//go:build dev") || !strings.Contains(string(dev), "var WebOrigin string") {
+		t.Error("web_dev.go must carry the dev build tag and an unset WebOrigin for ldflags")
+	}
+}
+
 func TestMakefileDevSetsBothOrigins(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join(root, "Makefile"))
 	if err != nil {
@@ -143,7 +161,8 @@ func TestMakefileDevSetsBothOrigins(t *testing.T) {
 	}
 	for _, line := range strings.Split(string(src), "\n") {
 		if strings.Contains(line, "-tags dev") {
-			if !strings.Contains(line, "internal/server.Address=") || !strings.Contains(line, "internal/server.TroveOrigin=") {
+			if !strings.Contains(line, "internal/server.Address=") || !strings.Contains(line, "internal/server.TroveOrigin=") ||
+				!strings.Contains(line, "internal/server.WebOrigin=") {
 				t.Fatalf("the dev build sets only part of the compiled in origins: %s", line)
 			}
 			return

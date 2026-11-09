@@ -10,8 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/smrit-ai/cli/internal/plan"
+	"github.com/smrit-ai/cli/internal/server"
 )
 
 // A CSV cell is checked here as Smrit's write_records checks it
@@ -273,30 +275,25 @@ const base58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 var maxShortID = new(big.Int).Lsh(big.NewInt(1), 122)
 
 // relationMention is the canonical mention Smrit stores for a relation
-// cell written <smrit:d:ID>, <smrit:s:ID>, <smrit:wb:ID> or
-// <smrit:wb:ID#SEQ>, with ID short or a UUID. The other spellings Smrit
-// reads in a document body are refused here.
-func relationMention(t string) (string, bool) {
-	if strings.ContainsAny(t, "?;") {
+// cell, read as Smrit's cell_mention reads it (api/smrit/content/outline.py):
+// the cell trimmed, printable, with no ? or ;, and one of
+// <smrit:d|s|wb:ID>, <smrit:wb:ID#SEQ>, the bare smrit:d|s|wb:ID[#SEQ],
+// /d/ID and /d/ID/edit, /w/ID[#SEQ], /{org}/{space}/d/ID..., and
+// /{org}/{space}/w/ID[#SEQ], each path also absolute on the web origin. A #
+// that names no workbook row is refused.
+func relationMention(raw string) (string, bool) {
+	t := strings.TrimSpace(raw)
+	if !printable(t) || strings.ContainsAny(t, "?;") {
 		return "", false
 	}
-	m := mentionRE.FindStringSubmatch(t)
-	if m == nil {
-		return "", false
+	var kind, seq string
+	var ok bool
+	if m := mentionRE.FindStringSubmatch(t); m != nil {
+		kind, seq, ok = schemeMention(m[1], m[2])
+	} else {
+		kind, seq, ok = urlMention(t)
 	}
-	kind, rest, seq := m[1], m[2], ""
-	if kind == "wb" {
-		if i := strings.IndexByte(rest, '#'); i >= 0 {
-			rest, seq = rest[:i], rest[i+1:]
-			if !seqRE.MatchString(seq) {
-				return "", false
-			}
-			if n, err := strconv.ParseUint(seq, 10, 64); err != nil || n > math.MaxInt64 {
-				return "", false
-			}
-		}
-	}
-	if !validID(rest) {
+	if !ok || (strings.Contains(t, "#") && seq == "") {
 		return "", false
 	}
 	out := "<smrit:" + kind + ":" + strings.Repeat("x", 21)
@@ -304,6 +301,110 @@ func relationMention(t string) (string, bool) {
 		out += "#" + seq
 	}
 	return out + ">", true
+}
+
+func printable(s string) bool {
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			return false
+		}
+	}
+	return true
+}
+
+// schemeMention is what follows smrit:, d:ID or wb:ID#12. A # after d or s
+// leaves the id unreadable.
+func schemeMention(letter, rest string) (kind, seq string, ok bool) {
+	if letter != "d" && letter != "s" && letter != "wb" {
+		return "", "", false
+	}
+	if letter == "wb" {
+		if i := strings.IndexByte(rest, '#'); i >= 0 {
+			if rest, seq = rest[:i], rest[i+1:]; !validSeq(seq) {
+				return "", "", false
+			}
+		}
+	}
+	return letter, seq, validID(rest)
+}
+
+func validSeq(s string) bool {
+	if !seqRE.MatchString(s) {
+		return false
+	}
+	n, err := strconv.ParseUint(s, 10, 64)
+	return err == nil && n <= math.MaxInt64
+}
+
+// urlMention reads a bare smrit: mention or a path as Python's urlparse
+// splits it, for the forms Smrit takes.
+func urlMention(t string) (kind, seq string, ok bool) {
+	if strings.HasPrefix(t, "smrit:") {
+		parts := strings.SplitN(t, ":", 3)
+		if len(parts) != 3 {
+			return "", "", false
+		}
+		return schemeMention(parts[1], parts[2])
+	}
+	scheme, netloc, rest := "", "", t
+	if i := strings.IndexByte(rest, ':'); i > 0 && isASCIILetter(rest[0]) && schemeChars(rest[:i]) {
+		scheme, rest = strings.ToLower(rest[:i]), rest[i+1:]
+	}
+	if strings.HasPrefix(rest, "//") {
+		end := len(rest)
+		if i := strings.IndexAny(rest[2:], "/?#"); i >= 0 {
+			end = i + 2
+		}
+		netloc, rest = rest[2:end], rest[end:]
+		if strings.Contains(netloc, "[") != strings.Contains(netloc, "]") {
+			return "", "", false
+		}
+	}
+	fragment := ""
+	if i := strings.IndexByte(rest, '#'); i >= 0 {
+		rest, fragment = rest[:i], rest[i+1:]
+	}
+	if scheme != "" || netloc != "" {
+		if strings.ToLower(scheme+"://"+netloc) != strings.ToLower(strings.TrimRight(server.WebOrigin, "/")) {
+			return "", "", false
+		}
+	}
+	path := strings.TrimRight(rest, "/")
+	if validSeq(fragment) {
+		seq = fragment
+	}
+	if id, found := strings.CutPrefix(path, "/d/"); found {
+		return "d", "", validID(strings.TrimSuffix(id, "/edit"))
+	}
+	if id, found := strings.CutPrefix(path, "/w/"); found {
+		return "wb", seq, validID(id)
+	}
+	var parts []string
+	for _, p := range strings.Split(path, "/") {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	if len(parts) >= 4 && parts[2] == "d" {
+		return "d", "", validID(parts[3])
+	}
+	if len(parts) == 4 && parts[2] == "w" {
+		return "wb", seq, validID(parts[3])
+	}
+	return "", "", false
+}
+
+func isASCIILetter(c byte) bool { return (c|0x20) >= 'a' && (c|0x20) <= 'z' }
+
+// schemeChars is Python's urllib scheme_chars test.
+func schemeChars(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !isASCIILetter(c) && (c < '0' || c > '9') && c != '+' && c != '-' && c != '.' {
+			return false
+		}
+	}
+	return true
 }
 
 // validID is Smrit's parse_id: 21 base58 characters below 2**122, or a

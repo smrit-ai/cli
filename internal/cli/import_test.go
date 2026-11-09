@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/smrit-ai/cli/internal/importer"
 	"github.com/smrit-ai/cli/internal/state"
 )
 
@@ -347,5 +348,21 @@ func TestImportWorkbookAlreadyInSmritExits0AndSaysSo(t *testing.T) {
 	}
 	if slices.Contains(f.tools, "write_workbook") || slices.Contains(f.tools, "write_records") {
 		t.Fatalf("wrote after the duplicate: %v", f.tools)
+	}
+}
+
+func TestImportTextCountsBlankRowsSkipped(t *testing.T) {
+	run := runOutput{importer.RunReport{Entries: []importer.RunEntry{
+		{Path: "t.csv", Kind: "workbook", Status: "created", ID: "DocAAAAAAAAAAAAAAAAAA", BlankRowsSkipped: 2},
+		{Path: "u.csv", Kind: "workbook", Status: "created", ID: "DocBBBBBBBBBBBBBBBBBB"},
+	}}}.String()
+	if !strings.Contains(run, "t.csv  workbook  created  DocAAAAAAAAAAAAAAAAAA  (2 blank rows skipped)\n") || strings.Contains(run, "u.csv  workbook  created  DocBBBBBBBBBBBBBBBBBB  (") {
+		t.Fatalf("%s", run)
+	}
+	dry := importOutput{importer.Report{Entries: []importer.ReportEntry{
+		{Path: "t.csv", Kind: "workbook", Action: "create", BlankRowsSkipped: 1},
+	}}}.String()
+	if !strings.Contains(dry, "t.csv  workbook  create  (1 blank row skipped)") {
+		t.Fatalf("%s", dry)
 	}
 }

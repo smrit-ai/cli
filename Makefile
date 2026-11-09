@@ -1,5 +1,6 @@
 SERVER ?= http://localhost:8000
 TROVE ?= http://localhost:8001
+WEB ?= http://localhost:3000
 MODULE := github.com/smrit-ai/cli
 TARGETS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 
@@ -21,7 +22,7 @@ build:
 	go build -o bin/smrit ./cmd/smrit
 
 dev:
-	go build -tags dev -ldflags "-X $(MODULE)/internal/server.Address=$(SERVER) -X $(MODULE)/internal/server.TroveOrigin=$(TROVE)" -o bin/smrit ./cmd/smrit
+	go build -tags dev -ldflags "-X $(MODULE)/internal/server.Address=$(SERVER) -X $(MODULE)/internal/server.TroveOrigin=$(TROVE) -X $(MODULE)/internal/server.WebOrigin=$(WEB)" -o bin/smrit ./cmd/smrit
 
 # make release VERSION=x.y.z writes the four tarballs, SHA256SUMS and install.sh to dist/.
 export VERSION

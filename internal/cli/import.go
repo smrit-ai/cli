@@ -25,6 +25,7 @@ func (o importOutput) String() string {
 		if e.Space != "" {
 			line += "  " + printable(e.Space)
 		}
+		line += blankRows(e.BlankRowsSkipped)
 		if e.Action == importer.ActionRefused {
 			line += ": " + printable(e.Reason)
 		}
@@ -55,6 +56,7 @@ func (o runOutput) String() string {
 		if e.ID != "" {
 			line += "  " + printable(e.ID)
 		}
+		line += blankRows(e.BlankRowsSkipped)
 		if e.Error != "" {
 			line += ": " + printable(e.Error)
 		}
@@ -76,6 +78,17 @@ func (o runOutput) String() string {
 	fmt.Fprintf(&b, "%d created, %d updated, %d unchanged,%s %d failed, %d refused, %d skipped.",
 		o.Created, o.Updated, o.Unchanged, exists, o.Failed, o.Refused, o.Skipped)
 	return b.String()
+}
+
+// blankRows says how many blank CSV rows were left out, if any.
+func blankRows(n int) string {
+	switch {
+	case n == 1:
+		return "  (1 blank row skipped)"
+	case n > 1:
+		return fmt.Sprintf("  (%d blank rows skipped)", n)
+	}
+	return ""
 }
 
 const importUsage = "Usage: smrit import <plan> [--dry-run | --resume <run>]"

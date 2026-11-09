@@ -189,45 +189,53 @@ func TestLoadHashedIsTheFileBytesHash(t *testing.T) {
 	}
 }
 
-// A workbook's describing document is made from its title, so two workbooks
-// with one title, or a workbook titled as a document of the plan, would
-// meet as one name in Smrit: each is refused before anything is written.
+// A workbook's describing document is made from its title, and Smrit
+// refuses a document whose slug, derived from the title as Smrit derives it,
+// another document in the same space already has. The plan refuses each
+// workbook that would meet that, and nothing else.
 func TestWorkbookTitleClashesRefused(t *testing.T) {
+	sp := append([]Space{{ID: "SpaceIdHandbook0000003", Slug: "handbook", Name: "Handbook", Visibility: "private"}}, spaces...)
 	res := scan.Result{Files: []scan.File{
 		file("a.csv", "workbook"), file("b.csv", "workbook"), file("c.csv", "workbook"),
-		file("d.csv", "workbook"), file("e.csv", "workbook"),
+		file("d.csv", "workbook"), file("e.csv", "workbook"), file("f.csv", "workbook"),
+		file("g.csv", "workbook"), file("h.csv", "workbook"),
 		file("guide.md", "document"), file("notes.md", "document"),
 	}}
-	wb := func(p, title string) PlanEntry {
-		return PlanEntry{Path: p, Kind: "workbook", Space: "engineering", Title: title}
+	wb := func(p, space, title string) PlanEntry {
+		return PlanEntry{Path: p, Kind: "workbook", Space: space, Title: title}
 	}
 	p := Plan{Root: "/r", Entries: []PlanEntry{
-		wb("a.csv", "Tasks"), wb("b.csv", "Tasks"),
+		// One slug in one space: both refused.
+		wb("a.csv", "engineering", "Tasks"), wb("b.csv", "engineering", "tasks!"),
+		// The same title in another space: Smrit takes it.
+		wb("c.csv", "handbook", "Tasks"),
+		// A document titled Runbook whose slug is guide: no clash.
 		{Path: "guide.md", Kind: "document", Space: "engineering", Type: "t", Title: "Runbook"},
-		wb("c.csv", "Runbook"),
+		wb("d.csv", "engineering", "Runbook"),
+		// The document's slug is notes, as this title's would be.
 		{Path: "notes.md", Kind: "document", Space: "engineering", Type: "t"},
-		// The document's slug is notes; this title would be stored as notes.
-		wb("d.csv", "Notes!"),
-		wb("e.csv", "Releases"),
+		wb("e.csv", "engineering", "Notes"),
+		// notes in another space: no clash.
+		wb("f.csv", "handbook", "Notes"),
+		wb("g.csv", "engineering", "Releases"),
+		wb("h.csv", "handbook", "Releases 2026"),
 	}}
-	ok, bad := Validate(context.Background(), p, res, spaces, true)
+	ok, bad := Validate(context.Background(), p, res, sp, true)
 	refused := map[string]string{}
 	for _, r := range bad {
 		refused[r.Path] = r.Reason
 	}
-	for _, path := range []string{"a.csv", "b.csv", "c.csv", "d.csv"} {
-		if refused[path] == "" {
-			t.Errorf("%s was not refused", path)
-		}
+	if len(refused) != 3 || refused["a.csv"] == "" || refused["b.csv"] == "" || refused["e.csv"] == "" {
+		t.Fatalf("%v", refused)
 	}
-	if !strings.Contains(refused["a.csv"], "Another workbook in the plan") || !strings.Contains(refused["c.csv"], "A document in the plan") {
+	if !strings.Contains(refused["a.csv"], "Another workbook in the plan") || !strings.Contains(refused["e.csv"], "A document in the plan") {
 		t.Errorf("%v", refused)
 	}
 	var kept []string
 	for _, e := range ok {
 		kept = append(kept, e.Path)
 	}
-	if strings.Join(kept, ",") != "guide.md,notes.md,e.csv" {
+	if strings.Join(kept, ",") != "c.csv,guide.md,d.csv,notes.md,f.csv,g.csv,h.csv" {
 		t.Fatalf("kept %v", kept)
 	}
 	for i := 1; i < len(bad); i++ {

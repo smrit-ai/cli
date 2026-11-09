@@ -60,6 +60,9 @@ type RunEntry struct {
 	Slug     string    `json:"slug"`
 	Title    string    `json:"title"`
 	Similar  []Similar `json:"similar"`
+	// BlankRowsSkipped is how many rows of a CSV had no value in any
+	// column and were left out.
+	BlankRowsSkipped int `json:"blank_rows_skipped"`
 }
 
 // RunReport is a whole run.

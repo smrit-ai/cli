@@ -178,25 +178,21 @@ func Validate(ctx context.Context, p Plan, res scan.Result, spaces []Space, obje
 // document under a name its space already has.
 const maxBaseSlug = 193
 
-// refuseTitleClashes refuses each workbook whose describing document would
-// meet another document of the plan under one name in Smrit: two workbooks
-// with one title, or a workbook titled as a plan document, or whose title
-// Smrit would store under a document's slug in the same space. Smrit would
-// refuse the second as a duplicate, after the first was written.
+// refuseTitleClashes refuses each workbook whose describing document Smrit
+// would refuse as a duplicate: its base slug, derived from its title as
+// Smrit derives it, is another workbook's or a plan document's in the same
+// space (content/services.py, _refuse_duplicate). Titles alone, or the same
+// title in two spaces, are no clash.
 func refuseTitleClashes(ok []Entry, bad []Refusal) ([]Entry, []Refusal) {
 	type key struct{ space, slug string }
-	books := map[string]int{}
-	bookSlugs := map[key]int{}
-	docTitles := map[string]bool{}
-	docSlugs := map[key]bool{}
+	books := map[key]int{}
+	docs := map[key]bool{}
 	for _, e := range ok {
 		switch e.Kind {
 		case scan.KindWorkbook:
-			books[e.Title]++
-			bookSlugs[key{e.Space, TitleSlug(e.Title)}]++
+			books[key{e.Space, TitleSlug(e.Title)}]++
 		case scan.KindDocument:
-			docTitles[e.Title] = true
-			docSlugs[key{e.Space, baseSlug(e.Slug)}] = true
+			docs[key{e.Space, baseSlug(e.Slug)}] = true
 		}
 	}
 	var kept []Entry
@@ -204,12 +200,11 @@ func refuseTitleClashes(ok []Entry, bad []Refusal) ([]Entry, []Refusal) {
 	for _, e := range ok {
 		reason := ""
 		if e.Kind == scan.KindWorkbook {
-			k := key{e.Space, TitleSlug(e.Title)}
-			switch {
-			case docTitles[e.Title] || docSlugs[k]:
-				reason = "A document in the plan has this workbook's title, or a name Smrit would store it under."
-			case books[e.Title] > 1 || bookSlugs[k] > 1:
-				reason = "Another workbook in the plan has this title, or one Smrit would store under the same name."
+			switch k := (key{e.Space, TitleSlug(e.Title)}); {
+			case docs[k]:
+				reason = "A document in the plan has the name Smrit would store this workbook's document under in this space."
+			case books[k] > 1:
+				reason = "Another workbook in the plan has a title Smrit would store under the same name in this space."
 			}
 		}
 		if reason == "" {
