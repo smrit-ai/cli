@@ -3,6 +3,7 @@ package importer
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/smrit-ai/cli/internal/scan"
@@ -26,6 +27,33 @@ type linkIndex struct {
 	pending map[string]bool
 	// exists are the files the rescan found.
 	exists map[string]bool
+	// links are each scanned file's links, by path.
+	links map[string][]scan.Link
+}
+
+// newLinkIndex knows the plan's validated entries and the rescan's files.
+func newLinkIndex(pr prepared) *linkIndex {
+	ix := &linkIndex{kind: map[string]string{}, ids: map[string]string{}, pending: map[string]bool{},
+		exists: map[string]bool{}, links: map[string][]scan.Link{}}
+	for _, f := range pr.res.Files {
+		ix.exists[f.Path] = true
+		ix.links[f.Path] = f.Links
+	}
+	for _, e := range pr.entries {
+		ix.kind[e.Path] = e.Kind
+	}
+	return ix
+}
+
+// linksIntoPlan reports whether the file at path links to any plan entry,
+// so a rewrite may change its bytes.
+func (ix *linkIndex) linksIntoPlan(path string) bool {
+	for _, l := range ix.links[path] {
+		if _, ok := ix.kind[l.Resolved]; ok && !l.External && l.Resolved != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // rewriteLinks replaces the target of every inline link and image in body
@@ -74,8 +102,10 @@ func rewriteLinks(body []byte, rel string, ix *linkIndex) (out []byte, findings 
 		if kind == scan.KindObject {
 			ref, whole = "smrit:object/"+id, "file"
 		}
-		if l.Anchor != "" {
-			find(l, "The link now points at the whole %s in Smrit, so %s was dropped.", whole, capRunes(l.Anchor))
+		if dropped := droppedParts(l); len(dropped) == 1 {
+			find(l, "The link now points at the whole %s in Smrit, so %s was dropped.", whole, dropped[0])
+		} else if len(dropped) == 2 {
+			find(l, "The link now points at the whole %s in Smrit, so %s and %s were dropped.", whole, dropped[0], dropped[1])
 		}
 		out = append(out, body[from:l.Start]...)
 		out = append(out, ref...)
@@ -83,6 +113,23 @@ func rewriteLinks(body []byte, rel string, ix *linkIndex) (out []byte, findings 
 	}
 	out = append(out, body[from:]...)
 	return out, findings, waiting
+}
+
+// droppedParts are the ?query and the #anchor of a link's target, which a
+// link to a whole document or file in Smrit cannot keep.
+func droppedParts(l scan.LinkSpan) []string {
+	var out []string
+	p := l.Target
+	if i := strings.IndexByte(p, '#'); i >= 0 {
+		p = p[:i]
+	}
+	if i := strings.IndexByte(p, '?'); i >= 0 && i+1 < len(p) {
+		out = append(out, capRunes(p[i:]))
+	}
+	if len(l.Anchor) > 1 {
+		out = append(out, capRunes(l.Anchor))
+	}
+	return out
 }
 
 // capRunes keeps untrusted text from a file to 200 characters.

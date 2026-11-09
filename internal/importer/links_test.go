@@ -17,6 +17,7 @@ func TestRewriteLinksByOffset(t *testing.T) {
 		"[later](later.md) [old](old.md) [notes](notes.txt) [gone](gone.md) [up](../up.md)",
 		"[web](https://example.com/guide.md) [here](#top) `[Guide](guide.md)`",
 		"[![Logo](<img/logo.png>)](guide.md#intro)",
+		"[q](guide.md?v=2) [qa](guide.md?x=1#y)",
 	}, "\n")
 	out, findings, waiting := rewriteLinks([]byte(body), "page.md", ix)
 	want := strings.Join([]string{
@@ -24,6 +25,7 @@ func TestRewriteLinksByOffset(t *testing.T) {
 		"[later](later.md) [old](old.md) [notes](notes.txt) [gone](gone.md) [up](../up.md)",
 		"[web](https://example.com/guide.md) [here](#top) `[Guide](guide.md)`",
 		"[![Logo](<smrit:object/ObjId>)](smrit:d:GuideId)",
+		"[q](smrit:d:GuideId) [qa](smrit:d:GuideId)",
 	}, "\n")
 	if string(out) != want {
 		t.Fatalf("got\n%s\nwant\n%s", out, want)
@@ -44,12 +46,14 @@ func TestRewriteLinksByOffset(t *testing.T) {
 		"gone.md":        "nothing",
 		"../up.md":       "outside",
 		"guide.md#intro": "#intro",
+		"guide.md?v=2":   "?v=2",
+		"guide.md?x=1#y": "?x=1 and #y",
 	} {
 		if !strings.Contains(got[target], words) {
 			t.Errorf("%s: %q, want it to say %q", target, got[target], words)
 		}
 	}
-	if len(findings) != 5 {
+	if len(findings) != 7 {
 		t.Errorf("findings %+v", findings)
 	}
 	for _, f := range findings {

@@ -125,6 +125,11 @@ func importCommand(s *Services) Command {
 				},
 			})
 			if err != nil {
+				// What was done before the stop is reported first, with the
+				// run's id, so nothing done is lost from view.
+				if rep.Run != "" {
+					env.Result(runOutput{rep})
+				}
 				code := importError(env, err)
 				if rep.Run != "" {
 					fmt.Fprintf(env.Stderr, "The run %s stopped. To carry on, run smrit import %s --resume %s\n", rep.Run, printable(args[0]), rep.Run)

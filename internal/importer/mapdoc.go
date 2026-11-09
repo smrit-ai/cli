@@ -27,7 +27,15 @@ func (r *runner) importMap() error {
 	}
 	note := "Written by smrit import, run " + r.st.ID + "."
 	if r.st.Map != "" {
-		raw, err := r.o.MCP.Call(r.ctx, "get_document_metadata", map[string]any{"document_id": r.st.Map})
+		// A map that already says this gets no new revision.
+		raw, err := r.o.MCP.Call(r.ctx, "get_document", map[string]any{"document_id": r.st.Map})
+		if err != nil {
+			return r.mapRefused(err)
+		}
+		if current, ok := bodyOf(raw); ok && strings.TrimSpace(current) == strings.TrimSpace(body) {
+			return nil
+		}
+		raw, err = r.o.MCP.Call(r.ctx, "get_document_metadata", map[string]any{"document_id": r.st.Map})
 		if err != nil {
 			return r.mapRefused(err)
 		}
@@ -81,17 +89,42 @@ func (r *runner) mapRefused(err error) error {
 	return err
 }
 
+// bodyOf is get_document's answer: the body as a string, or wrapped as
+// {"result": body} when the server sent it structured.
+func bodyOf(raw json.RawMessage) (string, bool) {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s, true
+	}
+	var w struct {
+		Result *string `json:"result"`
+	}
+	if json.Unmarshal(raw, &w) == nil && w.Result != nil {
+		return *w.Result, true
+	}
+	return "", false
+}
+
 // mapBody is the map's Markdown table, in plan order, and the space it goes
-// in. Empty when nothing was imported.
+// in: every entry Smrit holds from this run, including one whose file is no
+// longer in the folder. Empty when nothing was imported.
 func (r *runner) mapBody() (body, space string) {
-	var b strings.Builder
+	valid := map[string]string{}
 	for _, e := range r.pr.entries {
+		valid[e.Path] = e.Space
+	}
+	seen := map[string]bool{}
+	var b strings.Builder
+	for _, e := range r.p.Entries {
 		s := r.st.Entries[e.Path]
-		if !state.Done(s.Status) || s.ID == "" {
+		if seen[e.Path] || !state.Done(s.Status) || s.ID == "" {
 			continue
 		}
+		seen[e.Path] = true
 		if space == "" && e.Kind == scan.KindDocument {
-			space = e.Space
+			if space = valid[e.Path]; space == "" {
+				space = e.Space
+			}
 		}
 		ref := "<smrit:d:" + s.ID + ">"
 		if e.Kind == scan.KindObject {

@@ -45,7 +45,7 @@ type RunEntry struct {
 	Path     string    `json:"path"`
 	Kind     string    `json:"kind"`
 	Space    string    `json:"space"`
-	Status   string    `json:"status"` // created, updated, unchanged, failed, refused, skipped
+	Status   string    `json:"status"` // created, updated, unchanged, failed, refused, skipped, pending
 	ID       string    `json:"id"`
 	Error    string    `json:"error"`
 	Type     string    `json:"type"`
@@ -75,9 +75,11 @@ type RunReport struct {
 
 // Sentences of a run.
 const (
-	notYet       = "Importing files and workbooks comes in a later version."
-	hashMismatch = "The bytes Smrit received differ from the bytes sent."
-	noAnswer     = "Smrit gave no answer for this file."
+	notYet = "Importing files and workbooks comes in a later version."
+	// statusPending is an entry the run had not reached when it stopped.
+	statusPending = "pending"
+	hashMismatch  = "The bytes Smrit received differ from the bytes sent."
+	noAnswer      = "Smrit gave no answer for this file."
 )
 
 // runner is one run in progress.
@@ -90,10 +92,6 @@ type runner struct {
 	out  []RunEntry
 	docs []plan.Entry
 	ix   *linkIndex
-	// links are each scanned file's links, by path.
-	links map[string][]scan.Link
-	// waited are documents sent with a link left for a pending target.
-	waited map[string]bool
 	// findings are each document's link findings from its last rewrite.
 	findings map[string][]LinkFinding
 	mapError string
@@ -113,8 +111,7 @@ func Run(ctx context.Context, p plan.Plan, o RunOptions) (RunReport, error) {
 		return rep, err
 	}
 	r := &runner{ctx: ctx, o: o, p: p, pr: pr, out: make([]RunEntry, len(p.Entries)),
-		links: map[string][]scan.Link{}, waited: map[string]bool{}, findings: map[string][]LinkFinding{},
-		ix: &linkIndex{kind: map[string]string{}, ids: map[string]string{}, pending: map[string]bool{}, exists: map[string]bool{}}}
+		findings: map[string][]LinkFinding{}, ix: newLinkIndex(pr)}
 	unlock, err := r.begin()
 	if err != nil {
 		return rep, err
@@ -129,18 +126,25 @@ func Run(ctx context.Context, p plan.Plan, o RunOptions) (RunReport, error) {
 }
 
 func (r *runner) all() error {
-	for _, f := range r.pr.res.Files {
-		r.ix.exists[f.Path] = true
-		r.links[f.Path] = f.Links
-	}
 	for _, x := range r.pr.refusals {
+		// A file Smrit already holds from this run stays done, with its id,
+		// even when the folder no longer has it as it was: the import map
+		// keeps it, and a link to it still resolves.
+		if s, ok := r.st.Entries[x.Path]; ok && state.Done(s.Status) && s.ID != "" {
+			msg := x.Reason + " Smrit keeps what this run imported earlier."
+			if !r.ix.exists[x.Path] {
+				msg = "This file is no longer in the folder, so it was not checked again. Smrit keeps what this run imported."
+			}
+			r.out[x.Index] = RunEntry{Path: x.Path, Kind: x.Kind, Space: x.Space, Status: s.Status, ID: s.ID, Error: msg, Similar: []Similar{}}
+			r.ix.kind[x.Path], r.ix.ids[x.Path] = s.Kind, s.ID
+			continue
+		}
 		r.out[x.Index] = RunEntry{Path: x.Path, Kind: x.Kind, Space: x.Space, Status: state.StatusRefused, Error: x.Reason, Similar: []Similar{}}
 		r.st.Entries[x.Path] = state.EntryState{Kind: x.Kind, Status: state.StatusRefused, Error: x.Reason}
 	}
 	var objects, workbooks []plan.Entry
 	for _, e := range r.pr.entries {
-		r.out[e.Index] = RunEntry{Path: e.Path, Kind: e.Kind, Space: e.Space, Type: e.Type, Slug: e.Slug, Title: e.Title, Similar: []Similar{}}
-		r.ix.kind[e.Path] = e.Kind
+		r.out[e.Index] = RunEntry{Path: e.Path, Kind: e.Kind, Space: e.Space, Status: statusPending, Type: e.Type, Slug: e.Slug, Title: e.Title, Similar: []Similar{}}
 		switch e.Kind {
 		case scan.KindDocument:
 			r.docs = append(r.docs, e)
@@ -199,7 +203,8 @@ func (r *runner) skipAll(es []plan.Entry) error {
 }
 
 // documents previews every batch first, so every target that already
-// exists in Smrit has its id before anything is sent, then commits each
+// exists in Smrit has its id before anything is sent, previews again the
+// files whose links that changes, as the dry run does, then commits each
 // batch with its links rewritten.
 func (r *runner) documents() error {
 	var todo []plan.Entry
@@ -209,38 +214,27 @@ func (r *runner) documents() error {
 		}
 		todo = append(todo, e)
 	}
+	res, err := previewAll(r.ctx, r.o.Route, todo, r.ix)
+	if err != nil {
+		return err
+	}
 	var alive []plan.Entry
-	for _, batch := range Batches(todo) {
-		if err := r.ctx.Err(); err != nil {
-			return err
+	for _, x := range res {
+		e := x.Entry
+		if x.Refused != "" {
+			r.refuse(e, x.Refused)
+			continue
 		}
-		res, err := previewBatch(r.ctx, r.o.Route, batch)
-		if err != nil {
-			return err
+		o := &r.out[e.Index]
+		fillFromPreview(&o.Type, &o.Slug, &o.Title, &o.TypeFrom, &o.Similar, x.Item)
+		if action, reason := previewAction(x.Item); action == ActionRefused {
+			r.refuse(e, reason)
+			continue
 		}
-		for _, x := range res {
-			e := x.Entry
-			if x.Refused != "" {
-				r.refuse(e, x.Refused)
-				continue
-			}
-			o := &r.out[e.Index]
-			fillFromPreview(&o.Type, &o.Slug, &o.Title, &o.TypeFrom, &o.Similar, x.Item)
-			action, reason := previewAction(x.Item)
-			switch {
-			case action == ActionRefused:
-				r.refuse(e, reason)
-				continue
-			case action == ActionCreate:
-				r.ix.pending[e.Path] = true
-			case x.Item.DocumentID != "":
-				r.ix.ids[e.Path] = x.Item.DocumentID
-			}
-			alive = append(alive, e)
-		}
-		if err := r.save(); err != nil {
-			return err
-		}
+		alive = append(alive, e)
+	}
+	if err := r.save(); err != nil {
+		return err
 	}
 	for _, batch := range Batches(alive) {
 		if err := r.commit(batch); err != nil {
@@ -264,29 +258,16 @@ func (r *runner) alreadyDone(e plan.Entry) bool {
 	return true
 }
 
-// linkPass sends again the documents holding links to documents this run
-// created, now that those have ids, and only those whose bytes change.
+// linkPass rewrites again every done document that links into the plan,
+// with every id now known, and sends only those whose bytes differ from the
+// ones Smrit holds. It keeps nothing in memory between runs: a target whose
+// id arrived in this run, in an earlier one, or whose answer was lost and
+// came back on resume as unchanged, is all the same to it.
 func (r *runner) linkPass() error {
-	created := map[string]bool{}
-	for p, s := range r.st.Entries {
-		if s.Status == state.StatusCreated {
-			created[p] = true
-		}
-	}
 	var again []plan.Entry
 	for _, e := range r.docs {
 		s := r.st.Entries[e.Path]
-		if !state.Done(s.Status) || s.SourceSHA256 != e.SHA256 {
-			continue
-		}
-		hit := r.waited[e.Path]
-		for _, l := range r.links[e.Path] {
-			if hit {
-				break
-			}
-			hit = !l.External && created[l.Resolved]
-		}
-		if hit {
+		if state.Done(s.Status) && s.SourceSHA256 == e.SHA256 && r.ix.linksIntoPlan(e.Path) {
 			again = append(again, e)
 		}
 	}
@@ -319,9 +300,8 @@ func (r *runner) commit(batch []plan.Entry) error {
 			}
 			continue
 		}
-		body, finds, waiting := rewriteLinks(data, e.Path, r.ix)
+		body, finds, _ := rewriteLinks(data, e.Path, r.ix)
 		r.findings[e.Path] = finds
-		r.waited[e.Path] = waiting
 		h := sha256.Sum256(body)
 		hashes[e.Path] = hex.EncodeToString(h[:])
 		if links && hashes[e.Path] == r.st.Entries[e.Path].SentSHA256 {
@@ -385,10 +365,13 @@ func (r *runner) fail(e plan.Entry, reason string) { r.failWithID(e, reason, "")
 
 // failWithID marks e failed. The id Smrit gave, or the one the run held, is
 // kept for a person to find the document by; a failed entry is never done.
-// A link to it still uses that id when one is known: the document is there.
+// A link to it uses that id: the document is in Smrit, whatever it holds.
 func (r *runner) failWithID(e plan.Entry, reason, id string) {
 	if id == "" {
 		id = r.st.Entries[e.Path].ID
+	}
+	if id != "" {
+		r.ix.ids[e.Path] = id
 	}
 	r.record(e, state.EntryState{Kind: e.Kind, SourceSHA256: e.SHA256, Status: state.StatusFailed, ID: id, Error: reason, Phase: r.st.Phase})
 }

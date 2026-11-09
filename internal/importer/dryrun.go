@@ -1,6 +1,7 @@
 package importer
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -137,9 +138,10 @@ type previewed struct {
 }
 
 // previewBatch reads each file of batch, checking its bytes against the
-// rescan, and previews those it could read. A refusal of the whole batch by
-// the route refuses each file; any other failure is returned.
-func previewBatch(ctx context.Context, route Previewer, batch []plan.Entry) ([]previewed, error) {
+// rescan, and previews those it could read, through rewrite when it is not
+// nil. A refusal of the whole batch by the route refuses each file; any
+// other failure is returned.
+func previewBatch(ctx context.Context, route Previewer, batch []plan.Entry, rewrite func(plan.Entry, []byte) []byte) ([]previewed, error) {
 	out := make([]previewed, len(batch))
 	var ups []Upload
 	var sent []int
@@ -149,6 +151,9 @@ func previewBatch(ctx context.Context, route Previewer, batch []plan.Entry) ([]p
 		if err != nil {
 			out[i].Refused = err.Error()
 			continue
+		}
+		if rewrite != nil {
+			data = rewrite(e, data)
 		}
 		ups = append(ups, Upload{Path: e.Path, Data: data, Type: e.Type, Title: e.Title, Slug: e.Slug})
 		sent = append(sent, i)
@@ -180,6 +185,69 @@ func previewBatch(ctx context.Context, route Previewer, batch []plan.Entry) ([]p
 		out[i].Item = it
 	}
 	return out, nil
+}
+
+// previewAll previews docs batch by batch and learns from the answers the
+// id of every document already in Smrit, and which will be created. Then it
+// previews again, with links rewritten, only the files whose bytes that
+// rewrite changes, and keeps that second answer: what a file is reported to
+// do is what the bytes the import sends will do.
+func previewAll(ctx context.Context, route Previewer, docs []plan.Entry, ix *linkIndex) ([]previewed, error) {
+	var all []previewed
+	for _, batch := range Batches(docs) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		res, err := previewBatch(ctx, route, batch, nil)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, res...)
+	}
+	at := map[string]int{}
+	for i, x := range all {
+		at[x.Entry.Path] = i
+		if x.Refused != "" {
+			continue
+		}
+		switch action, _ := previewAction(x.Item); {
+		case action == ActionCreate:
+			ix.pending[x.Entry.Path] = true
+		case action != ActionRefused && x.Item.DocumentID != "":
+			ix.ids[x.Entry.Path] = x.Item.DocumentID
+		}
+	}
+	var again []plan.Entry
+	for i, x := range all {
+		if action, _ := previewAction(x.Item); x.Refused != "" || action == ActionRefused || !ix.linksIntoPlan(x.Entry.Path) {
+			continue
+		}
+		data, err := readExact(x.Entry)
+		if err != nil {
+			all[i].Refused = err.Error()
+			continue
+		}
+		if body, _, _ := rewriteLinks(data, x.Entry.Path, ix); !bytes.Equal(body, data) {
+			again = append(again, x.Entry)
+		}
+	}
+	rewrite := func(e plan.Entry, data []byte) []byte {
+		body, _, _ := rewriteLinks(data, e.Path, ix)
+		return body
+	}
+	for _, batch := range Batches(again) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		res, err := previewBatch(ctx, route, batch, rewrite)
+		if err != nil {
+			return nil, err
+		}
+		for _, x := range res {
+			all[at[x.Entry.Path]] = x
+		}
+	}
+	return all, nil
 }
 
 // previewAction is what a preview item says will happen, with its reason as
@@ -223,24 +291,19 @@ func DryRun(ctx context.Context, in Input) (Report, error) {
 			docs = append(docs, e)
 		}
 	}
-	for _, batch := range Batches(docs) {
-		if err := ctx.Err(); err != nil {
-			return rep, err
+	res, err := previewAll(ctx, in.Route, docs, newLinkIndex(pr))
+	if err != nil {
+		return rep, err
+	}
+	for _, x := range res {
+		r := &out[x.Entry.Index]
+		if x.Refused != "" {
+			r.Action, r.Reason = ActionRefused, x.Refused
+			continue
 		}
-		res, err := previewBatch(ctx, in.Route, batch)
-		if err != nil {
-			return rep, err
-		}
-		for _, x := range res {
-			r := &out[x.Entry.Index]
-			if x.Refused != "" {
-				r.Action, r.Reason = ActionRefused, x.Refused
-				continue
-			}
-			it := x.Item
-			r.Action, r.Reason = previewAction(it)
-			fillFromPreview(&r.Type, &r.Slug, &r.Title, &r.TypeFrom, &r.Similar, it)
-		}
+		it := x.Item
+		r.Action, r.Reason = previewAction(it)
+		fillFromPreview(&r.Type, &r.Slug, &r.Title, &r.TypeFrom, &r.Similar, it)
 	}
 	for _, r := range out {
 		switch r.Action {

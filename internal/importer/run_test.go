@@ -41,7 +41,10 @@ type storeFake struct {
 	failOnce map[string]string
 	// onCommit runs at the start of every commit request.
 	onCommit func()
-	srv      *httptest.Server
+	// loseAnswer names paths whose next commit is written but answered 500,
+	// as if the answer were lost on the way back.
+	loseAnswer map[string]bool
+	srv        *httptest.Server
 }
 
 type fakeDoc struct {
@@ -60,7 +63,7 @@ func sum(s string) string {
 }
 
 func newStore(t *testing.T) *storeFake {
-	f := &storeFake{docs: map[string]*fakeDoc{}, tamper: map[string]bool{}, failOnce: map[string]string{}}
+	f := &storeFake{docs: map[string]*fakeDoc{}, tamper: map[string]bool{}, failOnce: map[string]string{}, loseAnswer: map[string]bool{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == mcpURL {
 			f.mcp(w, r)
@@ -143,6 +146,15 @@ func (f *storeFake) mcp(w http.ResponseWriter, r *http.Request) {
 		body, _ := a["body"].(string)
 		d := f.add(slug, title, body)
 		answer(map[string]any{"document_id": d.ID, "revision": d.Revisions})
+	case "get_document":
+		id, _ := a["document_id"].(string)
+		d := f.byID(id)
+		if d == nil {
+			refuse("not found")
+			return
+		}
+		s, _ := json.Marshal(d.Body)
+		io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":`+string(s)+`}]}}`)
 	case "get_document_metadata":
 		id, _ := a["document_id"].(string)
 		d := f.byID(id)
@@ -241,6 +253,13 @@ func (f *storeFake) route(w http.ResponseWriter, r *http.Request) {
 	}
 	if commit {
 		f.commits = append(f.commits, rec)
+		for _, p := range rec.Paths {
+			if f.loseAnswer[p] {
+				delete(f.loseAnswer, p)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+		}
 	} else {
 		f.previews = append(f.previews, rec)
 	}
@@ -643,6 +662,7 @@ func TestMapUpdatedNotDuplicated(t *testing.T) {
 	write(t, root, "a.md", "# A\n")
 	write(t, root, "x|y.md", "# Y\n")
 	f := newStore(t)
+	f.failOnce["x|y.md"] = "Smrit could not save this file."
 	dir := t.TempDir()
 	p := docsPlan(root, "a.md", "x|y.md")
 	p.Entries = append(p.Entries, plan.PlanEntry{Path: "a.md.bak", Kind: "document", Space: "nowhere", Type: "note"})
@@ -653,23 +673,35 @@ func TestMapUpdatedNotDuplicated(t *testing.T) {
 		t.Fatalf("map %q, %d creates", first.Map, len(creates))
 	}
 	c := creates[0].Args
-	a, y := entryOf(t, first, "a.md").ID, entryOf(t, first, "x|y.md").ID
-	wantBody := "| Path | Document |\n|---|---|\n| a.md | <smrit:d:" + a + "> |\n| x\\|y.md | <smrit:d:" + y + "> |\n"
-	if c["title"] != "Import map: team-docs 2026-11-09" || c["space_id"] != "engineering" || c["type"] != "reference" || c["body"] != wantBody {
+	a := entryOf(t, first, "a.md").ID
+	if c["title"] != "Import map: team-docs 2026-11-09" || c["space_id"] != "engineering" || c["type"] != "reference" ||
+		c["body"] != "| Path | Document |\n|---|---|\n| a.md | <smrit:d:"+a+"> |\n" {
 		t.Fatalf("create %+v", c)
 	}
 	if _, ok := c["allow_duplicate"]; ok {
 		t.Fatal("asked for a duplicate")
 	}
 
-	// Resumed: the same map is updated against its current revision.
+	// Resumed, y is imported: the same map is updated against its current
+	// revision, with y's row.
 	o := f.opts(dir)
 	o.Resume = first.Run
 	again := mustRun(t, p, o)
+	y := entryOf(t, again, "x|y.md").ID
 	ups := f.toolCalls("update_document")
+	wantBody := "| Path | Document |\n|---|---|\n| a.md | <smrit:d:" + a + "> |\n| x\\|y.md | <smrit:d:" + y + "> |\n"
 	if again.Map != first.Map || len(f.toolCalls("create_document")) != 1 || len(ups) != 1 ||
-		ups[0].Args["document_id"] != first.Map || ups[0].Args["base_revision"] != float64(1) {
+		ups[0].Args["document_id"] != first.Map || ups[0].Args["base_revision"] != float64(1) || ups[0].Args["body"] != wantBody {
 		t.Fatalf("map %q, updates %+v", again.Map, ups)
+	}
+
+	// Resumed again with nothing new: the map already says it all, so it
+	// gets no new revision.
+	if third := mustRun(t, p, o); third.Map != first.Map || third.MapError != "" {
+		t.Fatalf("third %+v", third)
+	}
+	if n := len(f.toolCalls("update_document")); n != 1 {
+		t.Fatalf("%d updates after an unchanged resume", n)
 	}
 
 	// A fresh run with no state finds the name taken: reported, no retry.
@@ -682,6 +714,108 @@ func TestMapUpdatedNotDuplicated(t *testing.T) {
 		if _, ok := c.Args["allow_duplicate"]; ok {
 			t.Fatal("retried with allow_duplicate")
 		}
+	}
+}
+
+// A commit whose answer is lost leaves a link waiting on a document Smrit
+// did write. The resume finds that document unchanged, created by nobody in
+// its eyes, and must still bring the link in the earlier file up to date.
+func TestResumeAfterLostAnswerRewritesLink(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "# A\nSee [B](b.md).\n")
+	write(t, root, "b.md", "# B\n")
+	f := newStore(t)
+	f.loseAnswer["b.md"] = true
+	dir := t.TempDir()
+	p := docsPlan(root, "a.md", "b.md")
+	p.Entries[1].Space = "handbook"
+	first, err := Run(context.Background(), p, f.opts(dir))
+	if err == nil || first.Run == "" {
+		t.Fatalf("lost answer: %v %+v", err, first)
+	}
+	o := f.opts(dir)
+	o.Resume = first.Run
+	rep := mustRun(t, p, o)
+	f.mu.Lock()
+	bid, body := f.docs["b"].ID, f.docs["a"].Body
+	f.mu.Unlock()
+	if body != "# A\nSee [B](smrit:d:"+bid+").\n" {
+		t.Fatalf("a holds %q", body)
+	}
+	if e := entryOf(t, rep, "b.md"); e.ID != bid || !state.Done(e.Status) {
+		t.Fatalf("%+v", e)
+	}
+}
+
+// A file gone from the folder since its import is still in Smrit: the run
+// keeps its id and status and says the file is missing here.
+func TestResumeKeepsDoneEntryWhoseFileIsGone(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "# A\n")
+	write(t, root, "b.md", "# B\n")
+	f := newStore(t)
+	dir := t.TempDir()
+	p := docsPlan(root, "a.md", "b.md")
+	first := mustRun(t, p, f.opts(dir))
+	bid := entryOf(t, first, "b.md").ID
+	os.Remove(filepath.Join(root, "b.md"))
+	o := f.opts(dir)
+	o.Resume = first.Run
+	rep := mustRun(t, p, o)
+	b := entryOf(t, rep, "b.md")
+	if b.Status != state.StatusCreated || b.ID != bid || !strings.Contains(b.Error, "no longer in the folder") {
+		t.Fatalf("%+v", b)
+	}
+	if rep.Refused != 0 || rep.Created != 2 {
+		t.Fatalf("%+v", rep)
+	}
+	run, _ := state.LoadRun(dir, first.Run)
+	if s := run.Entries["b.md"]; s.Status != state.StatusCreated || s.ID != bid {
+		t.Fatalf("state %+v", s)
+	}
+}
+
+// A document Smrit wrote with bytes other than the ones sent still exists:
+// its id is used as a link target.
+func TestHashMismatchIDStillLinkTarget(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "# A\nSee [B](b.md).\n")
+	write(t, root, "b.md", "# B\n")
+	f := newStore(t)
+	f.tamper["b.md"] = true
+	rep := mustRun(t, docsPlan(root, "a.md", "b.md"), f.opts(t.TempDir()))
+	b := entryOf(t, rep, "b.md")
+	if b.Status != state.StatusFailed || b.ID == "" {
+		t.Fatalf("%+v", b)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.docs["a"].Body != "# A\nSee [B](smrit:d:"+b.ID+").\n" {
+		t.Fatalf("a holds %q", f.docs["a"].Body)
+	}
+}
+
+// The dry run previews the bytes the import would send: after an import,
+// a file whose links were rewritten is unchanged, not update.
+func TestDryRunAfterImportSaysUnchanged(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "a.md", "# A\nSee [B](b.md).\n")
+	write(t, root, "b.md", "# B\n")
+	f := newStore(t)
+	p := docsPlan(root, "a.md", "b.md")
+	mustRun(t, p, f.opts(t.TempDir()))
+	c := f.client()
+	rep, err := DryRun(context.Background(), Input{Plan: p, MCP: c, Route: &Route{MCP: c}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range rep.Entries {
+		if e.Action != ActionUnchanged {
+			t.Errorf("%s: %s", e.Path, e.Action)
+		}
+	}
+	if rep.Unchanged != 2 {
+		t.Fatalf("%+v", rep)
 	}
 }
 

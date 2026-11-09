@@ -255,9 +255,17 @@ func TestImportRunUpgradeExits6AndNamesTheRun(t *testing.T) {
 	f.preview = 426
 	svc := setup(t, srv, prof("acme", orgID))
 	plan := writePlan(t, `[{"path":"a.md","kind":"document","space":"engineering","type":"decision"}]`, map[string]string{"a.md": "# A\n"})
-	code, _, errs := runCmd(t, svc, "import", plan)
+	code, out, errs := runCmd(t, svc, "import", plan)
 	if code != ExitUpgrade || !strings.Contains(errs, "Upgrade smrit") || !strings.Contains(errs, "--resume") {
 		t.Fatalf("exit %d: %s", code, errs)
+	}
+	// What was done before the stop is reported, with the run's id.
+	var rep struct {
+		Run     string           `json:"run"`
+		Entries []map[string]any `json:"entries"`
+	}
+	if err := json.Unmarshal([]byte(out), &rep); err != nil || rep.Run == "" || len(rep.Entries) != 1 || !strings.Contains(errs, rep.Run) {
+		t.Fatalf("%v %q %q", err, out, errs)
 	}
 }
 
