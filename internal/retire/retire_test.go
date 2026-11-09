@@ -95,6 +95,7 @@ type fixture struct {
 	n      int
 	zips   ZipStore
 	rename Renamer
+	link   func(root *os.Root, oldname, newname string) error
 	git    string
 }
 
@@ -136,7 +137,7 @@ func (f *fixture) retire(apply bool) (Report, error) {
 	if err := state.SaveRun(f.dir, f.run); err != nil {
 		f.t.Fatal(err)
 	}
-	return Run(context.Background(), f.run.ID, Options{StateDir: f.dir, Apply: apply, Now: func() time.Time { return today }, Zips: f.zips, Rename: f.rename, Scan: scan.Options{Git: f.git}})
+	return Run(context.Background(), f.run.ID, Options{StateDir: f.dir, Apply: apply, Now: func() time.Time { return today }, Zips: f.zips, Rename: f.rename, Link: f.link, Scan: scan.Options{Git: f.git}})
 }
 
 func (f *fixture) mustRetire(apply bool) Report {
@@ -1363,5 +1364,36 @@ func TestLeftoversListedNeverTouched(t *testing.T) {
 				t.Fatal("the leftover went into the zip")
 			}
 		}
+	}
+}
+
+// In a folder that takes no hard link, a file that must go back is left
+// under its temporary name: a rename back would replace whatever took the
+// name meanwhile. The report names where it is kept.
+func TestPutBackWithoutHardLinksKeepsTheTemporaryName(t *testing.T) {
+	isolate(t)
+	root := realPath(t, t.TempDir())
+	f := newFixture(t, root)
+	f.done("a.md", "as imported\n")
+	f.rename = renameHook{before: func(old string) {
+		if filepath.Base(old) == "a.md" {
+			write(t, root, "a.md", "edited\n")
+		}
+	}}
+	f.link = func(*os.Root, string, string) error { return errors.ErrUnsupported }
+	rep := f.mustRetire(true)
+	r := leftReason(rep, "a.md")
+	if !strings.Contains(r, "kept as .smrit-retire-") || !strings.Contains(r, "hard link") {
+		t.Fatalf("report: %+v", rep)
+	}
+	if exists(t, filepath.Join(root, "a.md")) {
+		t.Fatal("the file was renamed back over its name")
+	}
+	kept := strings.TrimSuffix(strings.Fields(r[strings.Index(r, "kept as ")+len("kept as "):])[0], ",")
+	if content(t, filepath.Join(root, kept)) != "edited\n" {
+		t.Errorf("the edited bytes are not at %s", kept)
+	}
+	if len(rep.Zipped) != 0 || len(rep.Deleted) != 0 {
+		t.Fatalf("report: %+v", rep)
 	}
 }

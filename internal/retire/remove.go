@@ -141,6 +141,7 @@ func confirmClean(root *os.Root, rootPath string, heads *gitHeads, items []item,
 type remover struct {
 	root   *os.Root
 	rename Renamer
+	link   func(root *os.Root, oldname, newname string) error
 	heads  *gitHeads
 }
 
@@ -203,18 +204,20 @@ func (rm *remover) placeholder(rel string) (string, error) {
 // putBack returns the moved file to its name, never over a file that took
 // the name meanwhile. It returns reason when the file is back, and a
 // sentence naming where it is kept when it could not be put back.
+//
+// Only a hard link puts it back, because a link fails when the name is
+// taken. A rename would replace a file that took the name between a check
+// and the rename, so in a folder that takes no hard links the file stays
+// under its temporary name, where scan and retire list it as a leftover.
 func (rm *remover) putBack(tmp, rel, reason string) string {
 	from, to := filepath.FromSlash(tmp), filepath.FromSlash(rel)
-	// A hard link fails when the name is taken, so nothing is replaced.
-	if err := rm.root.Link(from, to); err == nil {
+	err := rm.link(rm.root, from, to)
+	if err == nil {
 		rm.root.Remove(from)
 		return reason
 	}
-	// A folder that takes no hard links: rename, only while the name is free.
-	if _, err := rm.root.Lstat(to); errors.Is(err, fs.ErrNotExist) {
-		if err := rm.root.Rename(from, to); err == nil {
-			return reason
-		}
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Sprintf("it changed while retire ran and is kept as %s, because another file now has its name", tmp)
 	}
-	return fmt.Sprintf("it changed while retire ran and is kept as %s, because another file now has its name", tmp)
+	return fmt.Sprintf("it changed while retire ran and is kept as %s, because this folder takes no hard link to put it back without risk of replacing another file", tmp)
 }

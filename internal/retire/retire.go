@@ -41,6 +41,9 @@ type Options struct {
 	Zips ZipStore
 	// Rename moves a file aside before it is removed; nil is os.Root.Rename.
 	Rename Renamer
+	// Link puts a moved file back under its name; nil is os.Root.Link. A
+	// test makes it fail as a folder without hard links does.
+	Link func(root *os.Root, oldname, newname string) error
 }
 
 // Renamer renames a file inside the folder retire opened, by names relative
@@ -311,7 +314,10 @@ func Run(ctx context.Context, id string, o Options) (Report, error) {
 	for _, it := range delItems {
 		order = append(order, removal{it, false})
 	}
-	rm := &remover{root: root, rename: o.Rename, heads: heads}
+	rm := &remover{root: root, rename: o.Rename, link: o.Link, heads: heads}
+	if rm.link == nil {
+		rm.link = (*os.Root).Link
+	}
 	if rm.rename == nil {
 		rm.rename = rootRename{}
 	}
