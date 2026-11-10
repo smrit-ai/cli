@@ -6,11 +6,19 @@ Documentation: [Smrit CLI](https://smrit.ai/smrit/docs/d/CB8qx47pDhsLuHMwZNdzh),
 
 ## Install
 
+On macOS or Linux, Intel or ARM:
+
+```
+curl -fsSL https://github.com/smrit-ai/cli/releases/latest/download/install.sh | sh
+```
+
+It downloads the latest release, checks it against the release's `SHA256SUMS`, and installs `smrit` into `/usr/local/bin` when that is writable without sudo, else `~/.local/bin`. `SMRIT_INSTALL_DIR` chooses another folder. `smrit upgrade` keeps it current.
+
+Or build it with Go 1.25 or newer:
+
 ```
 go install github.com/smrit-ai/cli/cmd/smrit@latest
 ```
-
-This needs Go 1.25 or newer. A one line installer and prebuilt binaries are coming with the first release.
 
 ## Commands
 

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs the smrit command line from the latest GitHub release.
 #
-#   curl -fsSL https://smrit.ai/install.sh | sh
+#   curl -fsSL https://github.com/smrit-ai/cli/releases/latest/download/install.sh | sh
 #
 # The checksum guards against a corrupted or truncated download. It does not
 # protect against a compromised release, because SHA256SUMS comes from the
